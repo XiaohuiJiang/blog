@@ -1,0 +1,69 @@
+### 磁盘性能测试的方法
+
+基本步骤：
+
+开3个窗口：
+1.	运行blktrace /dev/sdb，搜集sdb的数据，停下来后用blkparse/btt分析
+2.	运行iostat –x 1 观察实时现象
+3.	运行测试工具。
+
+
+Blktrace的使用方法：
+blktrace /dev/sdb  采集数据，等待一段时间（几十秒），ctrl+c停止
+       
+       观察和分析结果
+       blkparse -i sdb -d sdb.blktrace.bin –o sdb.blkparse
+       btt -i sdc.blktrace.bin | grep -A 45 "All Devices"
+
+测试工具有各种场景数据读写的模拟，需要自己理解原理稍作参数调整。我做了三种场景的模拟。
+
+1.	dd 单进程循环写磁盘文件，可以修改不同的of的文件名，同时运行多个这样的脚本，模拟多进程写的场景。这个测试对磁盘压力不算大，也能作为参考。
+sh -c "while true; do  dd if=/dev/zero of=/mnt/lv3/dd_todm.data bs=1k count=100 oflag=direct conv=fdatasync; done" >/dev/null 2>&1
+
+2.	fio 工具 模拟顺序写， 命令就是： fio ./fio.conf_direct_sequence_write
+cat fio.conf_direct_sequence_write
+[global]
+ioengine=libaio
+iodepth=128
+time_based
+direct=1
+thread=1
+group_reporting
+randrepeat=0
+norandommap
+numjobs=32
+timeout=6000
+runtime=120
+
+# 1K顺序写，吞吐
+[write-1k]
+rw=write
+bs=1k
+filename=/mnt/lv3/dd_todm.data
+stonewall
+
+3.	fio 模拟随机写， fio ./ fio.conf_direct_random_write
+cat fio.conf_direct_random_write
+[global]
+ioengine=libaio
+iodepth=128
+time_based
+direct=1
+thread=1
+group_reporting
+randrepeat=0
+norandommap
+numjobs=32
+timeout=6000
+runtime=120
+
+# 1K随机写，IOPS
+[randwrite-1k]
+rw=randwrite
+bs=1k
+filename=/mnt/lv3/dd_todm.data
+stonewall
+
+
+参考：
+https://blog.csdn.net/qq_36357820/article/details/79965014

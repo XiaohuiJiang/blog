@@ -1,0 +1,37 @@
+
+
+### 关于iostat中await的理解
+
+await：每个I/O平均所需的时间=[Δrd_ticks+Δwr_ticks]/[Δrd_ios+Δwr_ios]
+（不仅包括硬盘设备处理I/O的时间，还包括了在kernel队列中等待的时间。）
+(rd_ticks)读操作消耗的时间（以毫秒为单位）。每个读操作从__make_request()开始计时，到end_that_request_last()为止，包括了在队列中等待的时间。
+(wr_ticks)写操作消耗的时间（以毫秒为单位）
+
+
+假设只有写的情况，3个请求同时到达队列：
+队列中有3个写请求，
+第一个用了4毫秒，
+第二个等待了4毫秒，用时2毫秒，总的用时6毫秒
+第三个等待6毫秒用时3毫秒，总的用时9毫秒
+3个请求包括等待时间一共用了4+6+9=19毫秒的时间，
+
+
+Δrd_ticks+Δwr_ticks 是iostat统计的时间间隔内io占用的总的时间，这里是19毫秒
+Δrd_ios+Δwr_ios 是 3个
+Await 是19/3=6毫秒。
+
+这个例子中实际磁盘时间只有9毫秒， 等待时间是10毫秒。
+所以await*io的个数是所有io请求消耗在队列中的时间和磁盘上的时间之和，
+等待时间总数会随着队列中IO请求数的增加而增加，所以要通过await（平均等待时间）体现IO性能。await*io 不具有参考意义。
+
+结论是：
+Iostat -x 1 的输出中await、iops、avgqu-sz等只是反映IO系统在当前配置和特定负载下的某一个方面的性能，
+要用FIO实际做压力测试对比，才知道特定配置下的最大性能。
+要通过blktrace工具可以了解更多的细节，确定io优化的方向。
+await*iops为1秒钟内所有请求的总的等待时间加上磁盘时间，性能分析时不具备实际参考意义。
+
+参考：
+http://linuxperf.com/?p=156
+https://www.kernel.org/doc/Documentation/iostats.txt
+
+

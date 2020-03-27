@@ -1,0 +1,9 @@
+### 修改磁盘的io调度算法的方法
+
+1.1） 临时修改echo 'noop' >/sys/block/sdb/queue/scheduler， 每次做数据库同步之前修改，完成后恢复原值；
+1.2）永久方法grub中配置增加命令行参数elevator=noop，但这个影响是全局的，并且针对所有磁盘的。
+
+vim /etc/default/grub
+GRUB_CMDLINE_LINUX_DEFAULT="resume=/dev/sda1 splash=silent quiet showopts elevator=noop"
+
+grub2-mkconfig -o /boot/grub2/grub.cfg
