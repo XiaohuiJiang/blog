@@ -7,3 +7,104 @@ vim /etc/default/grub
 GRUB_CMDLINE_LINUX_DEFAULT="resume=/dev/sda1 splash=silent quiet showopts elevator=noop"
 
 grub2-mkconfig -o /boot/grub2/grub.cfg
+
+
+1.3）利用udev设置一个磁盘的scheduler， 
+新建一个/etc/udev/rules.d/io_scheduler.rules，内容如下, “#”开始的为注释内容，仅供参考
+udevadm trigger --name-match=sda 生效，重启以后也有效。
+
+
+linux-d4xo:~ # cat /etc/udev/rules.d/io_scheduler.rules
+#ACTION=="add|change", KERNEL=="sd[a-z]", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="deadline"
+ACTION=="add|change", KERNEL=="sda", ATTR{queue/scheduler}="deadline"
+#ACTION=="add|change", KERNEL=="sd[b-z]", ATTR{queue/scheduler}="noop"
+linux-d4xo:~ #
+
+例子：
+linux-d4xo:~ # cat /sys/block/sda/queue/scheduler
+[noop] deadline cfq
+linux-d4xo:~ # vim /etc/udev/rules.d/io_scheduler.rules
+linux-d4xo:~ # udevadm trigger --name-match=sda
+linux-d4xo:~ # cat /sys/block/sda/queue/scheduler
+noop [deadline] cfq
+
+
+参考
+http://blog.chinaunix.net/uid-16361381-id-5825729.html
+
+1.4）启用blk_mq的方法
+blk_mq为linux block层的新的多队列调度算法，可以减少内核中的锁的竞争，提高IO并发能力。避免调度队列成为IO性能的瓶颈，充分发挥SSD、NVME等高速磁盘的IO性能。具体请自行搜索。
+本实验基于suse15sp1，内核版本4.12.14-197.7-default， 较早的内核可能不支持，未做专门测试。
+
+1.4.1）将scsi_mod.use_blk_mq=1加到命令行参数，全局启用scsi设备默认设置为使用blk_mq. 并且启动后同样可以用上面说的方法单独修改某一个磁盘的调度算法。
+
+以下为启用后的结果查询。
+
+```bash
+suse15sp1-1:~ # cat /sys/block/sda/queue/scheduler
+[mq-deadline] kyber bfq none
+suse15sp1-1:~ # cat /proc/cmdline
+BOOT_IMAGE=/boot/vmlinuz-4.12.14-197.7-default root=UUID=b56bf0dd-a97a-46f1-a313-90614a9edeff splash=silent resume=/dev/disk/by-path/pci-0000:00:10.0-scsi-0:0:0:0-part4 mitigations=auto quiet crashkernel=190M,high scsi_mod.use_blk_mq=1
+suse15sp1-1:~ # lsscsi
+[1:0:0:0]    cd/dvd  NECVMWar VMware SATA CD01 1.00  /dev/sr0
+[29:0:0:0]   disk    VMware,  VMware Virtual S 1.0   /dev/sda
+suse15sp1-1:~ # find /sys -name use_blk_mq | grep host29
+/sys/devices/pci0000:00/0000:00:10.0/host29/scsi_host/host29/use_blk_mq
+suse15sp1-1:~ # cat /sys/devices/pci0000:00/0000:00:10.0/host29/scsi_host/host29/use_blk_mq
+1
+suse15sp1-1:~ # uname -a
+Linux suse15sp1-1 4.12.14-197.7-default #1 SMP Mon Jun 24 08:33:54 UTC 2019 (650fd32) x86_64 x86_64 x86_64 GNU/Linux
+suse15sp1-1:~ # cat /sys/module/dm_mod/parameters/use_blk_mq
+N
+suse15sp1-1:~ # cat /sys/module/scsi_mod/parameters/use_blk_mq
+Y
+
+suse15sp1-1:~ # vim /etc/udev/rules.d/99io_scheduler.rules
+suse15sp1-1:~ # cat /etc/udev/rules.d/99io_scheduler.rules
+ACTION=="add|change", KERNEL=="sda", ATTR{queue/scheduler}="bfq"
+suse15sp1-1:~ # udevadm trigger --name-match=sda
+suse15sp1-1:~ # cat /sys/block/sda/queue/scheduler
+mq-deadline kyber [bfq] none
+suse15sp1-1:~ # echo kyber > /sys/block/sda/queue/scheduler
+suse15sp1-1:~ # cat /sys/block/sda/queue/scheduler
+mq-deadline [kyber] bfq none
+
+```
+1.4.2）如果blk_mq没有在启动时设置到kernel的命令行参数中，运行时修改是不生效的。
+```bash
+suse15sp1-1:~ # cat /proc/cmdline
+BOOT_IMAGE=/boot/vmlinuz-4.12.14-197.7-default root=UUID=b56bf0dd-a97a-46f1-a313-90614a9edeff splash=silent resume=/dev/disk/by-path/pci-0000:00:10.0-scsi-0:0:0:0-part4 mitigations=auto quiet crashkernel=190M,high
+suse15sp1-1:~ # cat /sys/block/sda/queue/scheduler
+noop deadline [cfq]
+suse15sp1-1:~ # cat /sys/module/scsi_mod/parameters/use_blk_mq
+N
+suse15sp1-1:~ # echo 1 > /sys/module/scsi_mod/parameters/use_blk_mq
+suse15sp1-1:~ # cat /sys/module/scsi_mod/parameters/use_blk_mq
+Y
+suse15sp1-1:~ # cat /sys/block/sda/queue/scheduler
+noop deadline [cfq]
+suse15sp1-1:~ # echo bfq > /sys/block/sda/queue/scheduler
+-bash: echo: write error: Invalid argument
+suse15sp1-1:~ # cat /sys/devices/pci0000:00/0000:00:10.0/host29/scsi_host/host29/use_blk_mq
+cat: '/sys/devices/pci0000:00/0000:00:10.0/host29/scsi_host/host29/use_blk_mq': No such file or directory
+suse15sp1-1:~ #
+
+```
+1.4.3）通过modprobe.d/99-local.conf设置scsi_mod的启动参数，然后重启也不能达到设置use_blk_mq=1的效果
+ echo "options scsi_mod use_blk_mq=1" >> /etc/modprobe.d/99-local.conf
+ 
+ ```bash
+ suse15sp1-1:~ # cat /proc/cmdline
+BOOT_IMAGE=/boot/vmlinuz-4.12.14-197.7-default root=UUID=b56bf0dd-a97a-46f1-a313-90614a9edeff splash=silent resume=/dev/disk/by-path/pci-0000:00:10.0-scsi-0:0:0:0-part4 mitigations=auto quiet crashkernel=190M,high
+suse15sp1-1:~ # cat /sys/block/sda/queue/scheduler
+noop deadline [cfq]
+suse15sp1-1:~ # cat /sys/module/scsi_mod/parameters/use_blk_mq
+N
+suse15sp1-1:~ # cat /etc/modprobe.d/99-local.conf
+#
+# please add local extensions to this file
+#
+options scsi_mod use_blk_mq=1
+suse15sp1-1:~ #
+
+ ```

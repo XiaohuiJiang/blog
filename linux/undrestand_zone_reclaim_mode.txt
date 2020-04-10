@@ -1,0 +1,218 @@
+
+##### 根据内核文档理解
+/proc/sys/vm/zone_reclaim_mode.
+ A value of 0 means that no local reclaim should take place. 
+ A value of 1 tells the kernel that a reclaim pass should be run in order to avoid allocations from the other node.
+如果zone_reclaim_mode 设置为0， 当NUMA系统某个node内存不足的时候，会从相邻的node分配内存。
+如果zone_reclaim_mode 设置为1， 当NUMA系统某个node内存不足的时候，会从这个node本地启动内存回收机制，避免从其它node分配内存。
+只有这个node的unmmap的cache大于min_unmapped_ratio，才会启动内存回收。unmmap的cache的页面为unmapped pages backed by normal files。
+如果zone_reclaim_mode 设置大于5（设置了这个值：4 = Zone reclaim swaps pages），unmmap的cache的页面为all file-backed unmapped pages including swapcache pages and tmpfs
+files
+
+如果zone_reclaim_mode 设置2或4， 可能会对系统性能有较大影响。
+如果运行的应用是一个文件服务器或数据库服务器，推荐zone_reclaim_mode 设置为0， 减少内存回收，保留disk cache比数据的本地化对性能更有好处。
+
+每个进程使用的NUMA node内存分布情况可以从这个文件查到：/proc/<pid>/numa_maps。 <pid> 换成进程的数字pid。
+Numactl 和 taskset 可以用来限制进程或线程使用CPU和内存的范围，是另外一种限制内存资源本地化分配的方法。
+也可以使用cgroup的cpuset限制进程使用的CPU集合。
+还可以设置进程内部特定内存快的分配策略参考mbind 和 set_mempolicy 的man page.
+
+lscpu 和 numactl --hardware 可以显示更多的CPU和NUMA信息
+numastat 可以显示系统整体内存分布情况，numa_miss和other_node 表示从另外的node分配的内存大小
+numastat -p <pid> 显示进程的内存分布在不同node上的统计信息
+numastat -m 输出每个node上的类似meminfo的统计信息，或者 cat /sys/devices/system/node/node<X>/meminfo
+
+##### 引用参考【1】
+The kernel reclaims pages when the number of free pages in a zone falls below the low water mark. 
+The page reclaim stops when the number of free pages rise above the 'LOW' watermark. 
+Further, these computations are per-zone:
+a zone reclaim can be triggered on a particular zone even if other zones on the host have plenty of free memory.
+
+##### 内核代码
+linux-3.0.101-108.87/mm/vmscan.c
+
+3833 /* Work out how many page cache pages we can reclaim in this reclaim_mode */
+3834 static long zone_pagecache_reclaimable(struct zone *zone)
+3835 {
+3836         long nr_pagecache_reclaimable;
+3837         long delta = 0;
+3838
+3839         /*
+3840          * If RECLAIM_SWAP is set, then all file pages are considered
+3841          * potentially reclaimable. Otherwise, we have to worry about
+3842          * pages like swapcache and zone_unmapped_file_pages() provides
+3843          * a better estimate
+3844          */
+3845         if (zone_reclaim_mode & RECLAIM_SWAP)
+3846                 nr_pagecache_reclaimable = zone_page_state(zone, NR_FILE_PAGES);
+3847         else
+3848                 nr_pagecache_reclaimable = zone_unmapped_file_pages(zone);
+3849
+3850         /* If we can't clean pages, remove dirty pages from consideration */
+3851         if (!(zone_reclaim_mode & RECLAIM_WRITE))
+3852                 delta += zone_page_state(zone, NR_FILE_DIRTY);
+3853
+3854         /* Watch for any possible underflows due to delta */
+3855         if (unlikely(delta > nr_pagecache_reclaimable))
+3856                 delta = nr_pagecache_reclaimable;
+3857
+3858         return nr_pagecache_reclaimable - delta;
+3859 }
+
+##### 引用参考【3】
+*/proc/sys/vm/zone_reclaim_mode*
+
+　　这个参数只会影响快速内存回收，其值有三种，
+
+    0x1：开启zone的内存回收
+    0x2：开启zone的内存回收，并且允许回写
+    0x4：开启zone的内存回收，允许进行unmap操作
+
+　　当此参数为0时，会导致快速内存回收只会对最优zone附近的几个需要进行内存回收的zone进行内存回收(说快速内存会解释)，而只要不为0，就会对zonelist中所有应该进行内存回收的zone进行内存回收。
+
+　　当此参数为0x1(001)时，就如上面一行所说，允许快速内存回收对zonelist中所有应该进行内存回收的zone进行内存回收。
+
+　　当此参数为0x2(010)时，在0x1的基础上，允许快速内存回收进行匿名页lru链表中的页的回写操作。（**根据内核代码，此处应为文件页回写**）
+
+　　当此参数0x4(100)时，在0x1的基础上，允许快速内存回收进行页的unmap操作。（因为回收tmpfs和swapcached时启用swap，需要将匿名页unmap之后再写到swap分区。）
+
+*内存回收种类*
+
+　　因为在不同的内存分配路径中，会触发不同的内存回收方式，内存回收针对的目标有两种，一种是针对zone的，另一种是针对一个memcg的，而这里我们只讨论针对zone的内存回收，个人把针对zone的内存回收方式分为三种，分别是快速内存回收、直接内存回收、kswapd内存回收。
+
+    快速内存回收：处于get_page_from_freelist()函数中，在遍历zonelist过程中，对每个zone都在分配前进行判断，如果分配后zone的空闲内存数量 < 阀值 + 保留页框数量，那么此zone就会进行快速内存回收，即使分配前此zone空闲页框数量都没有达到阀值，都会进行此zone的快速内存回收。注意阀值可能是min/low/high的任何一种，因为在快速内存分配，慢速内存分配和oom分配过程中如果回收的页框足够，都会调用到get_page_from_freelist()函数，所以快速内存回收不仅仅发生在快速内存分配中，在慢速内存分配过程中也会发生。
+    直接内存回收：处于慢速分配过程中，直接内存回收只有一种情况下会使用，在慢速分配中无法从zonelist的所有zone中以min阀值分配页框，并且进行异步内存压缩后，还是无法分配到页框的时候，就对zonelist中的所有zone进行一次直接内存回收。注意，直接内存回收是针对zonelist中的所有zone的，它并不像快速内存回收和kswapd内存回收，只会对zonelist中空闲页框不达标的zone进行内存回收。并且在直接内存回收中，有可能唤醒flush内核线程。
+    kswapd内存回收：发生在kswapd内核线程中，每个node有一个swapd内核线程，也就是kswapd内核线程中的内存回收，是只针对所在node的，并且只会对 分配了order页框数量后空闲页框数量 < 此zone的high阀值 + 保留页框数量 的zone进行内存回收，并不会对此node的所有zone进行内存回收。
+
+　　这三种内存回收虽然是在不同状态下会被触发，但是如果当内存不足时，kswapd内存回收和直接内存回收很大可能是在并发的进行内存回收的。而实际上，这三种回收再怎么不同，进行内存回收的执行代码是一样的，只是在内存回收前做的一些处理和判断不同。
+
+注意：在快速内存回收中，即使zone_reclaim_mode允许回写，也不会对脏文件页进行回写操作的，但是如果zone_reclaim_mode允许，会对非文件页进行回写操作。
+
+可以对快速内存回收总结出：
+
+开始标志是：此zone分配后剩余的页框数量 < 此zone的阀值 + 此zone的保留页框数量(阀值可能是:min,low,high其中一个)。
+
+结束标志是：对此zone回收到了本次分配时需要的页框数量 或者 sc->priority降为0(可能会进行多次shrink_zone()的调用)。
+
+回收对象：zone的干净文件页、slab、可能会回写匿名页
+ 
+
+
+
+##### 这是suse系统的默认设置
+jiang@linux-8lq6:~> uname -r
+3.0.101-63-default
+jiang@linux-8lq6:~> cat /proc/sys/vm/zone_reclaim_mode
+0
+jiang@linux-8lq6:~> cat /proc/sys/vm/mmap_min_addr
+65536
+jiang@linux-8lq6:~> cat /proc/sys/vm/numa_zonelist_order
+default
+
+##### 这是kernel文档关于zone_reclaim有关的解释
+
+linux-3.0.101-108.87/Documentation/sysctl/vm.txt 
+
+==============================================================
+zone_reclaim_mode:
+
+Zone_reclaim_mode allows someone to set more or less aggressive approaches to
+reclaim memory when a zone runs out of memory. If it is set to zero then no
+zone reclaim occurs. Allocations will be satisfied from other zones / nodes
+in the system.
+
+This is value ORed together of
+
+1       = Zone reclaim on
+2       = Zone reclaim writes dirty pages out
+4       = Zone reclaim swaps pages
+
+zone_reclaim_mode is set during bootup to 1 if it is determined that pages
+from remote zones will cause a measurable performance reduction. The
+page allocator will then reclaim easily reusable pages (those page
+cache pages that are currently not used) before allocating off node pages.
+
+It may be beneficial to switch off zone reclaim if the system is
+used for a file server and all of memory should be used for caching files
+from disk. In that case the caching effect is more important than
+data locality.
+
+Allowing zone reclaim to write out pages stops processes that are
+writing large amounts of data from dirtying pages on other nodes. Zone
+reclaim will write out dirty pages if a zone fills up and so effectively
+throttle the process. This may decrease the performance of a single process
+since it cannot use all of system memory to buffer the outgoing writes
+anymore but it preserve the memory on other nodes so that the performance
+of other processes running on other nodes will not be affected.
+
+Allowing regular swap effectively restricts allocations to the local
+node unless explicitly overridden by memory policies or cpuset
+configurations.
+=============================================================
+
+min_unmapped_ratio:
+
+This is available only on NUMA kernels.
+
+This is a percentage of the total pages in each zone. Zone reclaim will
+only occur if more than this percentage of pages are in a state that
+zone_reclaim_mode allows to be reclaimed.
+
+If zone_reclaim_mode has the value 4 OR'd, then the percentage is compared
+against all file-backed unmapped pages including swapcache pages and tmpfs
+files. Otherwise, only unmapped pages backed by normal files but not tmpfs
+files and similar are considered.
+
+The default is 1 percent.
+
+==============================================================
+
+numa_zonelist_order
+
+This sysctl is only for NUMA.
+'where the memory is allocated from' is controlled by zonelists.
+(This documentation ignores ZONE_HIGHMEM/ZONE_DMA32 for simple explanation.
+ you may be able to read ZONE_DMA as ZONE_DMA32...)
+
+In non-NUMA case, a zonelist for GFP_KERNEL is ordered as following.
+ZONE_NORMAL -> ZONE_DMA
+This means that a memory allocation request for GFP_KERNEL will
+get memory from ZONE_DMA only when ZONE_NORMAL is not available.
+
+In NUMA case, you can think of following 2 types of order.
+Assume 2 node NUMA and below is zonelist of Node(0)'s GFP_KERNEL
+
+(A) Node(0) ZONE_NORMAL -> Node(0) ZONE_DMA -> Node(1) ZONE_NORMAL
+(B) Node(0) ZONE_NORMAL -> Node(1) ZONE_NORMAL -> Node(0) ZONE_DMA.
+
+Type(A) offers the best locality for processes on Node(0), but ZONE_DMA
+will be used before ZONE_NORMAL exhaustion. This increases possibility of
+out-of-memory(OOM) of ZONE_DMA because ZONE_DMA is tend to be small.
+
+Type(B) cannot offer the best locality but is more robust against OOM of
+the DMA zone.
+
+Type(A) is called as "Node" order. Type (B) is "Zone" order.
+
+"Node order" orders the zonelists by node, then by zone within each node.
+Specify "[Nn]ode" for node order
+
+"Zone Order" orders the zonelists by zone type, then by node within each
+zone.  Specify "[Zz]one" for zone order.
+
+Specify "[Dd]efault" to request automatic configuration.  Autoconfiguration
+will select "node" order in following case.
+(1) if the DMA zone does not exist or
+(2) if the DMA zone comprises greater than 50% of the available memory or
+(3) if any node's DMA zone comprises greater than 60% of its local memory and
+    the amount of local memory is big enough.
+
+Otherwise, "zone" order will be selected. Default order is recommended unless
+this is causing problems for your system/application.
+
+==============================================================
+
+##### 参考
+【1】https://engineering.linkedin.com/performance/optimizing-linux-memory-management-low-latency-high-throughput-databases
+【2】https://queue.acm.org/detail.cfm?id=2513149
+【3】https://www.cnblogs.com/tolimit/p/5435068.html

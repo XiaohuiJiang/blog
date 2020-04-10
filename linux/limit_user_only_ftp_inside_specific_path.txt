@@ -1,0 +1,34 @@
+## 限制linux用户ftp时只访问特定的目录
+
+
+用户名：transfer
+要求访问/inputdata 这个目录；上传下载；
+
+##### 第一种方法：
+将transfer用户的home目录设置为/inputdata, 需求就简化为限制用户只能访问自己的home目录。
+设置 chroot_local_user=YES 即可
+
+##### 第二种方法：
+#创建用户和主目录以及定义shell
+#useradd -s /bin/bash -d /home/transfer -m transfer
+#passwd transfer
+
+#vi /etc/vsftpd/vsftp.conf
+设置 chroot_local_user=YES
+添加 user_config_dir=/var/ftp
+保存退出
+
+#mkdir -p /inputdata
+
+#chmod 777 /inputdata
+
+#mkdir -p /var/ftp/
+
+#echo "local_root=/inputdata" > /var/ftp/transfer
+
+重启vsftpd 就实现访问了
+# service vsftpd restart
+
+参考：
+https://blog.csdn.net/streen_gong/article/details/23841425
+man vsftpd.conf

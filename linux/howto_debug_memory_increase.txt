@@ -1,0 +1,123 @@
+## 利用strace和pmap分析进程中做的内存分配的线程
+
+##### 1) 增加crontab规则，定时采集进程内存状态数据， 此处以nscd进程为例。
+在crontab中%前要加\转义， 此处是每分钟采样一次，实际如果内存变化缓慢，可以改成每小时或其它间隔时间。
+crontab -u root -e
+
+*/1 * * * * pid=$(pidof nscd); cat /proc/${pid}/smaps >/root/temp/test_strace/smaps/smaps_${pid}_$(date +\%Y\%m\%d\%H\%M);
+
+
+可以用各种工具查看和对比保存后的数据：
+
+1.1) 查看一共有多少内存地址区间
+cd /root/temp/test_strace/smaps/
+grep -E "^[0-9a-f]" smaps_1085_202004091306 | wc -l
+
+1.2) diff 对比不同时间的smaps采样，观察内存的变化
+
+
+###### 2) strace 跟踪运行中的进程的系统调用，特别关注mmap，munmap，brk等与内存分配有关的系统调用。
+
+2.1) strace -tt -T -f -p $(pidof nscd)
+可以看到每个子线程中的系统调用
+linux-d4xo-2:~/temp/test_strace/strace # strace -tt -T -f -p $(pidof nscd)
+Process 1085 attached with 11 threads
+[pid  1096] 13:48:03.024655 futex(0x55697dd13824, FUTEX_WAIT_PRIVATE, 42469, NULL) = -1 EAGAIN (Resource temporarily unavailable) <0.000030>
+[pid  1096] 13:48:03.024865 futex(0x55697dd13824, FUTEX_WAIT_PRIVATE, 42471, NULL <unfinished ...>
+[pid  1095] 13:48:03.024950 futex(0x55697dd13824, FUTEX_WAIT_PRIVATE, 42463, NULL) = -1 EAGAIN (Resource temporarily unavailable) <0.000028>
+[pid  1095] 13:48:03.025036 futex(0x55697dd13824, FUTEX_WAIT_PRIVATE, 42471, NULL <unfinished ...>
+[pid  1094] 13:48:03.025146 futex(0x55697dd13824, FUTEX_WAIT_PRIVATE, 42467, NULL) = -1 EAGAIN (Resource temporarily unavailable) <0.000031>
+[pid  1094] 13:48:03.025266 futex(0x55697dd13824, FUTEX_WAIT_PRIVATE, 42471, NULL <unfinished ...>
+[pid  1093] 13:48:03.025359 futex(0x55697dd13824, FUTEX_WAIT_PRIVATE, 42471, NULL <unfinished ...>
+[pid  1092] 13:48:03.025441 futex(0x55697dd13824, FUTEX_WAIT_PRIVATE, 42465, NULL) = -1 EAGAIN (Resource temporarily unavailable) <0.000028>
+[pid  1092] 13:48:03.025527 futex(0x55697dd13824, FUTEX_WAIT_PRIVATE, 42471, NULL <unfinished ...>
+[pid  1089] 13:48:03.025643 restart_syscall(<... resuming interrupted call ...> <unfinished ...>
+[pid  1088] 13:48:03.025726 restart_syscall(<... resuming interrupted call ...> <unfinished ...>
+[pid  1091] 13:48:03.029800 restart_syscall(<... resuming interrupted call ...> <unfinished ...>
+[pid  1090] 13:48:03.029843 restart_syscall(<... resuming interrupted call ...> <unfinished ...>
+[pid  1087] 13:48:03.029875 restart_syscall(<... resuming interrupted call ...> <unfinished ...>
+[pid  1085] 13:48:03.029905 epoll_wait(4,
+
+2.2) strace -cf -p $(pidof nscd)
+运行此命令，等待一段时间， 按ctrl+c，会统计这段时间间隔内的函数调用百分比
+
+以下例子中，利用timeout命令等待100秒后kill strace命令，生成这100秒的统计信息。可以看到进程大部分时间处于futex中。
+
+linux-d4xo-2:~/temp/test_strace/strace # timeout -s 2 100 strace -cf -p $(pidof nscd)
+Process 1085 attached with 11 threads
+Process 1085 detached
+Process 1087 detached
+Process 1088 detached
+Process 1089 detached
+Process 1090 detached
+Process 1091 detached
+Process 1092 detached
+Process 1093 detached
+Process 1094 detached
+Process 1095 detached
+Process 1096 detached
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+ 78.40    0.007016         206        34         4 futex
+ 11.81    0.001057          44        24           epoll_wait
+  2.95    0.000264          29         9           sendmsg
+  1.39    0.000124          12        10           accept4
+  1.17    0.000105           5        20           epoll_ctl
+  1.12    0.000100           4        26         2 read
+  0.86    0.000077          39         2           sendto
+  0.78    0.000070           6        12           close
+  0.55    0.000049          25         2           poll
+  0.37    0.000033          33         1           munmap
+  0.12    0.000011          11         1           open
+  0.10    0.000009           9         1           connect
+  0.09    0.000008           8         1           socket
+  0.08    0.000007           7         1           mmap
+  0.07    0.000006           6         1           stat
+  0.06    0.000005           5         1           recvfrom
+  0.04    0.000004           4         1           fstat
+  0.04    0.000004           4         1           ioctl
+------ ----------- ----------- --------- --------- ----------------
+100.00    0.008949                   148         6 total
+
+
+2.3) strace -tt -T -ff -p $(pidof nscd) -o nscd &
+后台运行strace抓取每个线程的系统调用保存到不同的文件中。
+
+linux-d4xo-2:~/temp/test_strace/strace # ll
+total 0
+linux-d4xo-2:~/temp/test_strace/strace # strace -tt -T -ff -p $(pidof nscd) -o nscd &
+[1] 7334
+linux-d4xo-2:~/temp/test_strace/strace # Process 1085 attached with 11 threads
+
+linux-d4xo-2:~/temp/test_strace/strace # ll
+total 44
+-rw-r--r-- 1 root root  30 Apr  9 14:04 nscd.1085
+-rw-r--r-- 1 root root  67 Apr  9 14:04 nscd.1087
+-rw-r--r-- 1 root root  67 Apr  9 14:04 nscd.1088
+-rw-r--r-- 1 root root  67 Apr  9 14:04 nscd.1089
+-rw-r--r-- 1 root root  67 Apr  9 14:04 nscd.1090
+-rw-r--r-- 1 root root  67 Apr  9 14:04 nscd.1091
+-rw-r--r-- 1 root root 198 Apr  9 14:04 nscd.1092
+-rw-r--r-- 1 root root 648 Apr  9 14:04 nscd.1093
+-rw-r--r-- 1 root root 652 Apr  9 14:04 nscd.1094
+-rw-r--r-- 1 root root 198 Apr  9 14:04 nscd.1095
+-rw-r--r-- 1 root root 198 Apr  9 14:04 nscd.1096
+
+2.4) 对特定内存相关系统调用的strace
+strace -tt -T -ff -p $(pidof nscd) -e trace=memory
+
+
+##### 3) 分析方法
+
+3.1) 如果smaps中发现[heap]一直增长， 说明有大量小于128K的数据请求，并且最靠近顶端的部分没有释放， 并且使用brk()系统调用申请的。
+参考：
+https://www.linuxidc.com/Linux/2016-08/134197.htm
+https://yq.aliyun.com/articles/26650
+https://bbs.csdn.net/topics/330179712
+
+3.2） 如果是mmap比较多，会看到[anon]内存区间的总数在增长，可以根据调用mmap()的线程pid进一步分析此线程在做什么事情，是否合理使用内存。
+
+##### 4) 更多实例及调试工具的使用请参考：
+https://blog.csdn.net/sinat_38723234/article/details/105446047
+
+

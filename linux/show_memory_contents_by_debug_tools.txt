@@ -1,0 +1,418 @@
+## 利用调试工具查看运行中的进程内存数据
+
+##### 1) 被测试进程的源代码
+
+```c
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <string.h>
+
+#define handle_error(msg) \
+        do { perror(msg); exit(EXIT_FAILURE); } while (0)
+
+int main (int argc, char * argv[])
+{
+    void * addr;
+    void * caddr;
+    pid_t pid = getpid();
+    long numofpages_malloc = 1;
+    long numofpages_write = 0;
+    long seconds_sleep = 0;
+    size_t pagesize = sysconf(_SC_PAGE_SIZE);
+
+    numofpages_malloc = (argc > 1) ? atol(argv[1]):1;
+    numofpages_write  = (argc > 2) ? atol(argv[2]):0;
+    seconds_sleep     = (argc > 3) ? atol(argv[3]):60;
+    if (numofpages_write > numofpages_malloc)
+        numofpages_write = numofpages_malloc;
+
+    printf("%s numofpages_malloc %ld, numofpages_write %ld, pagesize %d\n", argv[0], numofpages_malloc, numofpages_write, pagesize);
+
+
+    addr = malloc(pagesize * numofpages_malloc);
+    if (addr == NULL)
+        handle_error("malloc");
+    printf("pid %d malloc returned at %p\n", pid, addr);
+    memset(addr, 0x55, pagesize * numofpages_write);
+    printf("wrote\n");
+
+    caddr = calloc(pagesize, numofpages_malloc);
+    if (caddr == NULL)
+        handle_error("calloc");
+    printf("pid %d calloc returned at %p\n", pid, caddr);
+    memset(caddr, 0xef, pagesize * numofpages_write);
+    printf("wrote\n");
+
+
+
+    sleep(seconds_sleep);
+    free(addr);
+    free(caddr);
+
+    return 0;
+}
+
+```
+##### 2) 执行的例子，分别调用malloc和calloc分配两个内存块， virtual大小都是2个pages， 实际各写1个page，退出前等待3秒。
+linux-d4xo-2:~/temp/test_strace/test_C # gcc ./malloc_test.c
+linux-d4xo-2:~/temp/test_strace/test_C # ./a.out 2 1 3
+./a.out numofpages_malloc 2, numofpages_write 1, pagesize 4096
+pid 38112 malloc returned at 0x662010
+wrote
+pid 38112 calloc returned at 0x664020
+wrote
+
+##### 3) 用strace跟踪程序运行
+3.1)分配比较少的页面(2个)，可以看到使用的是brk()系统调用返回的内存地址
+```bash
+linux-d4xo-2:~/temp/test_strace/test_C # strace -tt -T -ff -e trace=memory ./a.out 2 1 3
+22:02:48.776554 brk(0)                  = 0x24b0000 <0.000211>
+22:02:48.777178 mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7fc8084a3000 <0.000155>
+22:02:48.778398 mmap(NULL, 86258, PROT_READ, MAP_PRIVATE, 3, 0) = 0x7fc80848d000 <0.000237>
+22:02:48.779580 mmap(NULL, 3811776, PROT_READ|PROT_EXEC, MAP_PRIVATE|MAP_DENYWRITE, 3, 0) = 0x7fc807ee1000 <0.000319>
+22:02:48.780230 mprotect(0x7fc80807a000, 2097152, PROT_NONE) = 0 <0.000213>
+22:02:48.780720 mmap(0x7fc80827a000, 24576, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x199000) = 0x7fc80827a000 <0.000327>
+22:02:48.781345 mmap(0x7fc808280000, 14784, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_FIXED|MAP_ANONYMOUS, -1, 0) = 0x7fc808280000 <0.000254>
+22:02:48.782207 mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7fc80848c000 <0.000205>
+22:02:48.782771 mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7fc80848b000 <0.000230>
+22:02:48.783305 mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7fc80848a000 <0.000213>
+22:02:48.785766 mprotect(0x7fc80827a000, 16384, PROT_READ) = 0 <0.000251>
+22:02:48.786352 mprotect(0x600000, 4096, PROT_READ) = 0 <0.000169>
+22:02:48.786807 mprotect(0x7fc8084a4000, 4096, PROT_READ) = 0 <0.000171>
+22:02:48.787250 munmap(0x7fc80848d000, 86258) = 0 <0.000198>
+22:02:48.788194 mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7fc8084a2000 <0.000177>
+./a.out numofpages_malloc 2, numofpages_write 1, pagesize 4096
+22:02:48.789004 brk(0)                  = 0x24b0000 <0.000168>
+22:02:48.789455 brk(0x24d3000)          = 0x24d3000 <0.000205>
+pid 38350 malloc returned at 0x24b0010
+wrote
+pid 38350 calloc returned at 0x24b2020
+wrote
+22:02:51.792675 brk(0x24d1000)          = 0x24d1000 <0.000770>
+22:02:51.795001 +++ exited with 0 +++
+
+```
+
+3.2) 分配比较多的页面(128个)，可以看到使用的是mmap()系统调用返回的内存地址
+```bash
+linux-d4xo-2:~/temp/test_strace/test_C # strace -tt -T -ff -e trace=memory ./a.out 128 1 3
+22:05:06.668671 brk(0)                  = 0x8ca000 <0.000280>
+22:05:06.669430 mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f46f4143000 <0.000276>
+22:05:06.670768 mmap(NULL, 86258, PROT_READ, MAP_PRIVATE, 3, 0) = 0x7f46f412d000 <0.000301>
+22:05:06.672553 mmap(NULL, 3811776, PROT_READ|PROT_EXEC, MAP_PRIVATE|MAP_DENYWRITE, 3, 0) = 0x7f46f3b81000 <0.000281>
+22:05:06.673148 mprotect(0x7f46f3d1a000, 2097152, PROT_NONE) = 0 <0.000241>
+22:05:06.673714 mmap(0x7f46f3f1a000, 24576, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x199000) = 0x7f46f3f1a000 <0.000219>
+22:05:06.674309 mmap(0x7f46f3f20000, 14784, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_FIXED|MAP_ANONYMOUS, -1, 0) = 0x7f46f3f20000 <0.000192>
+22:05:06.675931 mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f46f412c000 <0.000498>
+22:05:06.677222 mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f46f412b000 <0.000229>
+22:05:06.677746 mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f46f412a000 <0.000244>
+22:05:06.678700 mprotect(0x7f46f3f1a000, 16384, PROT_READ) = 0 <0.000329>
+22:05:06.679321 mprotect(0x600000, 4096, PROT_READ) = 0 <0.000286>
+22:05:06.680024 mprotect(0x7f46f4144000, 4096, PROT_READ) = 0 <0.000239>
+22:05:06.680567 munmap(0x7f46f412d000, 86258) = 0 <0.000251>
+22:05:06.681696 mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f46f4142000 <0.000243>
+./a.out numofpages_malloc 128, numofpages_write 1, pagesize 4096
+22:05:06.682661 mmap(NULL, 528384, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f46f40a9000 <0.000255>
+pid 38357 malloc returned at 0x7f46f40a9010
+wrote
+22:05:06.683903 mmap(NULL, 528384, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f46f4028000 <0.000195>
+pid 38357 calloc returned at 0x7f46f4028010
+wrote
+22:05:09.687520 munmap(0x7f46f40a9000, 528384) = 0 <0.000684>
+22:05:09.689857 munmap(0x7f46f4028000, 528384) = 0 <0.001569>
+22:05:09.700873 +++ exited with 0 +++
+
+```
+
+##### 4) 用pmap观察进程的内存分配情况
+4.1) 后台运行程序，并sleep60分钟。进程pid为38361.
+```bash
+linux-d4xo-2:~/temp/test_strace/test_C # ./a.out 2 1 3600 &
+[1] 38361
+./a.out numofpages_malloc 2, numofpages_write 1, pagesize 4096
+pid 38361 malloc returned at 0x25d7010
+wrote
+pid 38361 calloc returned at 0x25d9020
+wrote
+
+```
+4.2) pmap内容主要来自/proc/38361/smaps, 
+可以看到目前heap的大小为VSZ 140K和 RSS 20K(5个pages的物理内存)。
+以及起始地址为00000000025d7000
+```bash
+linux-d4xo-2:~/temp/test_strace/test_C # pmap 38361
+38361: a.out
+START               SIZE     RSS     PSS   DIRTY PERM MAPPING
+0000000000400000      4K      4K      4K      0K r-xp /root/temp/test_strace/test_C/a.out
+0000000000600000      4K      4K      4K      4K r--p /root/temp/test_strace/test_C/a.out
+0000000000601000      4K      4K      4K      4K rw-p /root/temp/test_strace/test_C/a.out
+00000000025d7000    140K     20K     20K     20K rw-p [heap]
+00007f6dbc3de000   1636K   1096K     22K      0K r-xp /lib64/libc-2.22.so
+00007f6dbc577000   2048K      0K      0K      0K ---p /lib64/libc-2.22.so
+00007f6dbc777000     16K     16K     16K     16K r--p /lib64/libc-2.22.so
+00007f6dbc77b000      8K      8K      8K      8K rw-p /lib64/libc-2.22.so
+00007f6dbc77d000     16K      8K      8K      8K rw-p [anon]
+00007f6dbc781000    132K    124K      2K      0K r-xp /lib64/ld-2.22.so
+00007f6dbc987000     12K     12K     12K     12K rw-p [anon]
+00007f6dbc99f000      8K      8K      8K      8K rw-p [anon]
+00007f6dbc9a1000      4K      4K      4K      4K r--p /lib64/ld-2.22.so
+00007f6dbc9a2000      4K      4K      4K      4K rw-p /lib64/ld-2.22.so
+00007f6dbc9a3000      4K      4K      4K      4K rw-p [anon]
+00007ffc5e2cd000    132K     12K     12K     12K rw-p [stack]
+00007ffc5e31c000     12K      0K      0K      0K r--p [vvar]
+00007ffc5e31f000      8K      4K      0K      0K r-xp [vdso]
+ffffffffff600000      4K      0K      0K      0K r-xp [vsyscall]
+Total:             4196K   1332K    132K    104K
+
+328K writable-private, 3868K readonly-private, 0K shared, and 1332K referenced
+
+```
+
+##### 5) gdb attach查看程序内存
+由于编译时没有使用-g 选项， info locals看不到变量的符号。
+我们直接打印heap的内存地址的内容。
+可以看到malloc对每个数据块额外增加了16个bytes的数据头0x2011， 然后才是写入的数据。
+在数据块结束的位置有一个16bytes的结束标志0x1efe1。
+
+```bash
+linux-d4xo-2:~/temp/test_strace/test_C # gdb ./a.out 38361
+GNU gdb (GDB; SUSE Linux Enterprise 12) 8.0
+Copyright (C) 2017 Free Software Foundation, Inc.
+License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.  Type "show copying"
+and "show warranty" for details.
+This GDB was configured as "x86_64-suse-linux".
+Type "show configuration" for configuration details.
+For bug reporting instructions, please see:
+<http://bugs.opensuse.org/>.
+Find the GDB manual and other documentation resources online at:
+<http://www.gnu.org/software/gdb/documentation/>.
+For help, type "help".
+Type "apropos word" to search for commands related to "word"...
+Reading symbols from ./a.out...done.
+Attaching to program: /root/temp/test_strace/test_C/a.out, process 38361
+Reading symbols from /lib64/libc.so.6...(no debugging symbols found)...done.
+Reading symbols from /lib64/ld-linux-x86-64.so.2...(no debugging symbols found)...done.
+0x00007f6dbc498040 in __nanosleep_nocancel () from /lib64/libc.so.6
+Missing separate debuginfos, use: zypper install glibc-debuginfo-2.22-61.3.x86_64
+(gdb) bt
+#0  0x00007f6dbc498040 in __nanosleep_nocancel () from /lib64/libc.so.6
+#1  0x00007f6dbc497ef4 in sleep () from /lib64/libc.so.6
+#2  0x0000000000400a5b in main ()
+(gdb) info locals
+No symbol table info available.
+(gdb) f 1
+#1  0x00007f6dbc497ef4 in sleep () from /lib64/libc.so.6
+(gdb) info locals
+No symbol table info available.
+(gdb) f 2
+#2  0x0000000000400a5b in main ()
+(gdb) info locals
+No symbol table info available.
+(gdb) x/64a 0x00000000025d7000
+0x25d7000:      0x0     0x2011
+0x25d7010:      0x5555555555555555      0x5555555555555555
+0x25d7020:      0x5555555555555555      0x5555555555555555
+0x25d7030:      0x5555555555555555      0x5555555555555555
+0x25d7040:      0x5555555555555555      0x5555555555555555
+0x25d7050:      0x5555555555555555      0x5555555555555555
+0x25d7060:      0x5555555555555555      0x5555555555555555
+0x25d7070:      0x5555555555555555      0x5555555555555555
+0x25d7080:      0x5555555555555555      0x5555555555555555
+0x25d7090:      0x5555555555555555      0x5555555555555555
+0x25d70a0:      0x5555555555555555      0x5555555555555555
+0x25d70b0:      0x5555555555555555      0x5555555555555555
+
+...
+
+(gdb) x/128a 0x00000000025d8000
+0x25d8000:      0x5555555555555555      0x5555555555555555
+0x25d8010:      0x0     0x0
+0x25d8020:      0x0     0x0
+0x25d8030:      0x0     0x0
+0x25d8040:      0x0     0x0
+0x25d8050:      0x0     0x0
+0x25d8060:      0x0     0x0
+...
+
+(gdb) x/128a 0x00000000025d9000
+0x25d9000:      0x0     0x0
+0x25d9010:      0x0     0x2011
+0x25d9020:      0xefefefefefefefef      0xefefefefefefefef
+0x25d9030:      0xefefefefefefefef      0xefefefefefefefef
+0x25d9040:      0xefefefefefefefef      0xefefefefefefefef
+0x25d9050:      0xefefefefefefefef      0xefefefefefefefef
+0x25d9060:      0xefefefefefefefef      0xefefefefefefefef
+0x25d9070:      0xefefefefefefefef      0xefefefefefefefef
+0x25d9080:      0xefefefefefefefef      0xefefefefefefefef
+0x25d9090:      0xefefefefefefefef      0xefefefefefefefef
+0x25d90a0:      0xefefefefefefefef      0xefefefefefefefef
+0x25d90b0:      0xefefefefefefefef      0xefefefefefefefef
+0x25d90c0:      0xefefefefefefefef      0xefefefefefefefef
+0x25d90d0:      0xefefefefefefefef      0xefefefefefefefef
+0x25d90e0:      0xefefefefefefefef      0xefefefefefefefef
+...
+
+(gdb) x/128a 0x00000000025da000
+0x25da000:      0xefefefefefefefef      0xefefefefefefefef
+0x25da010:      0xefefefefefefefef      0xefefefefefefefef
+0x25da020:      0x0     0x0
+0x25da030:      0x0     0x0
+0x25da040:      0x0     0x0
+0x25da050:      0x0     0x0
+...
+
+(gdb) x/128a 0x00000000025db000
+0x25db000:      0x0     0x0
+0x25db010:      0x0     0x0
+0x25db020:      0x0     0x1efe1
+0x25db030:      0x0     0x0
+0x25db040:      0x0     0x0
+0x25db050:      0x0     0x0
+0x25db060:      0x0     0x0
+0x25db070:      0x0     0x0
+0x25db080:      0x0     0x0
+0x25db090:      0x0     0x0
+
+```
+
+##### 6) 换成较大的页面分配，发现2个mmap的内存区段被分配到了同一个anon区间，
+起始地址为0x00007f20267ea000， VSZ 1044K， RSS 28K(7 pages)。
+```bash
+linux-d4xo-2:~/temp/test_strace/test_C # ./a.out 128 1 3600 &
+[1] 39527
+./a.out numofpages_malloc 128, numofpages_write 1, pagesize 4096
+pid 39527 malloc returned at 0x7f202686b010
+wrote
+pid 39527 calloc returned at 0x7f20267ea010
+wrote
+linux-d4xo-2:~/temp/test_strace/test_C # pmap 39527
+39527: a.out
+START               SIZE     RSS     PSS   DIRTY PERM MAPPING
+0000000000400000      4K      4K      4K      0K r-xp /root/temp/test_strace/test_C/a.out
+0000000000600000      4K      4K      4K      4K r--p /root/temp/test_strace/test_C/a.out
+0000000000601000      4K      4K      4K      4K rw-p /root/temp/test_strace/test_C/a.out
+00007f2026343000   1636K   1076K     22K      0K r-xp /lib64/libc-2.22.so
+00007f20264dc000   2048K      0K      0K      0K ---p /lib64/libc-2.22.so
+00007f20266dc000     16K     16K     16K     16K r--p /lib64/libc-2.22.so
+00007f20266e0000      8K      8K      8K      8K rw-p /lib64/libc-2.22.so
+00007f20266e2000     16K      8K      8K      8K rw-p [anon]
+00007f20266e6000    132K    132K      2K      0K r-xp /lib64/ld-2.22.so
+00007f20267ea000   1044K     28K     28K     28K rw-p [anon]
+00007f2026904000      8K      8K      8K      8K rw-p [anon]
+00007f2026906000      4K      4K      4K      4K r--p /lib64/ld-2.22.so
+00007f2026907000      4K      4K      4K      4K rw-p /lib64/ld-2.22.so
+00007f2026908000      4K      4K      4K      4K rw-p [anon]
+00007fffa2ef8000    132K     12K     12K     12K rw-p [stack]
+00007fffa2f81000     12K      0K      0K      0K r--p [vvar]
+00007fffa2f84000      8K      4K      0K      0K r-xp [vdso]
+ffffffffff600000      4K      0K      0K      0K r-xp [vsyscall]
+Total:             5088K   1316K    128K    100K
+
+1220K writable-private, 3868K readonly-private, 0K shared, and 1316K referenced
+```
+
+##### 7)利用crash工具在活动内核上调试，和查看进程的内存，需要安装kernel-debuginfo 相关的rpm。
+启动命令
+#crash /proc/kcore
+
+```bash
+crash> set 40642
+    PID: 40642
+COMMAND: "a.out"
+   TASK: ffff880038805500  [THREAD_INFO: ffff88002ef68000]
+    CPU: 1
+  STATE: TASK_INTERRUPTIBLE
+crash> vm
+PID: 40642  TASK: ffff880038805500  CPU: 1   COMMAND: "a.out"
+       MM               PGD          RSS    TOTAL_VM
+ffff8800362ab040  ffff88002aa26000  1316k    4192k
+      VMA           START       END     FLAGS FILE
+ffff88002f3ce0e0     400000     401000 8000875 /@/.snapshots/1/snapshot/root/temp/test_strace/test_C/a.out
+ffff88002f3cee28     600000     601000 8100871 /@/.snapshots/1/snapshot/root/temp/test_strace/test_C/a.out
+ffff88002f3ced60     601000     602000 8100873 /@/.snapshots/1/snapshot/root/temp/test_strace/test_C/a.out
+ffff88002f3ce018    17be000    17e1000 8100073
+ffff88002f3ce658 7fec0c7d4000 7fec0c96d000 8000075 /@/.snapshots/1/snapshot/lib64/libc-2.22.so
+ffff88002f3ce338 7fec0c96d000 7fec0cb6d000 8000070 /@/.snapshots/1/snapshot/lib64/libc-2.22.so
+ffff88002f3ce270 7fec0cb6d000 7fec0cb71000 8100071 /@/.snapshots/1/snapshot/lib64/libc-2.22.so
+ffff88002f3ceb08 7fec0cb71000 7fec0cb73000 8100073 /@/.snapshots/1/snapshot/lib64/libc-2.22.so
+ffff88002f3ceef0 7fec0cb73000 7fec0cb77000 8100073
+ffff88002f3ce4c8 7fec0cb77000 7fec0cb98000 8000875 /@/.snapshots/1/snapshot/lib64/ld-2.22.so
+ffff88002f3cec98 7fec0cd7d000 7fec0cd80000 8100073
+ffff88002f3ce8b0 7fec0cd95000 7fec0cd97000 8100073
+ffff88002f3ce590 7fec0cd97000 7fec0cd98000 8100871 /@/.snapshots/1/snapshot/lib64/ld-2.22.so
+ffff880079101018 7fec0cd98000 7fec0cd99000 8100873 /@/.snapshots/1/snapshot/lib64/ld-2.22.so
+ffff88002f3ce400 7fec0cd99000 7fec0cd9a000 8100073
+ffff88003cfc0338 7ffdcc74c000 7ffdcc76d000 100173
+ffff88002f3cea40 7ffdcc791000 7ffdcc794000 c044411
+ffff88002f3ce1a8 7ffdcc794000 7ffdcc796000 8040075
+crash> gdb x/a 0x17be000
+0x17be000:      0x0
+crash> gdb x/64a 0x17be000
+0x17be000:      0x0     0x2011
+0x17be010:      0x5555555555555555      0x5555555555555555
+0x17be020:      0x5555555555555555      0x5555555555555555
+0x17be030:      0x5555555555555555      0x5555555555555555
+....
+0x17be1f0:      0x5555555555555555      0x5555555555555555
+crash> vm -f 8100073
+8100073: (READ|WRITE|MAYREAD|MAYWRITE|MAYEXEC|ACCOUNT|CAN_NONLINEAR)
+crash> vm -f 0x8100073
+8100073: (READ|WRITE|MAYREAD|MAYWRITE|MAYEXEC|ACCOUNT|CAN_NONLINEAR)
+crash>
+
+```
+
+##### 8) 利用gcore生成coredump，然后在利用gdb查看， 好处是不会停止运行中的进程。
+```bash
+linux-d4xo-2:~/temp/test_strace/test_C # pidof a.out
+40642
+linux-d4xo-2:~/temp/test_strace/test_C # gcore 40642
+0x00007fec0c88e040 in __nanosleep_nocancel () from /lib64/libc.so.6
+warning: target file /proc/40642/cmdline contained unexpected null characters
+Saved corefile core.40642
+linux-d4xo-2:~/temp/test_strace/test_C # ll
+total 392
+-rwxr-xr-x 1 root root  13072 Apr 10 21:50 a.out
+-rw-r--r-- 1 root root 377720 Apr 11 00:43 core.40642
+-rwxr-xr-x 1 root root   1712 Apr  9 17:11 malloc_test.c
+linux-d4xo-2:~/temp/test_strace/test_C # gdb ./a.out core.40642
+GNU gdb (GDB; SUSE Linux Enterprise 12) 8.0
+Copyright (C) 2017 Free Software Foundation, Inc.
+License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.  Type "show copying"
+and "show warranty" for details.
+This GDB was configured as "x86_64-suse-linux".
+Type "show configuration" for configuration details.
+For bug reporting instructions, please see:
+<http://bugs.opensuse.org/>.
+Find the GDB manual and other documentation resources online at:
+<http://www.gnu.org/software/gdb/documentation/>.
+For help, type "help".
+Type "apropos word" to search for commands related to "word"...
+Reading symbols from ./a.out...done.
+[New LWP 40642]
+Core was generated by `./a.out'.
+#0  0x00007fec0c88e040 in __nanosleep_nocancel () from /lib64/libc.so.6
+Missing separate debuginfos, use: zypper install glibc-debuginfo-2.22-61.3.x86_64
+(gdb) bt
+#0  0x00007fec0c88e040 in __nanosleep_nocancel () from /lib64/libc.so.6
+#1  0x00007fec0c88def4 in sleep () from /lib64/libc.so.6
+#2  0x0000000000400a5b in main ()
+(gdb) x/64a 0x17be000
+0x17be000:      0x0     0x2011
+0x17be010:      0x5555555555555555      0x5555555555555555
+0x17be020:      0x5555555555555555      0x5555555555555555
+0x17be030:      0x5555555555555555      0x5555555555555555
+0x17be040:      0x5555555555555555      0x5555555555555555
+0x17be050:      0x5555555555555555      0x5555555555555555
+
+```
