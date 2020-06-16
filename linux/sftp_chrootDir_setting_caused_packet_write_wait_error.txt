@@ -1,0 +1,40 @@
+## sftp的ChrootDirectory设置引起的packet_write_wait错误
+
+### 这个是设置用户只能使用sftp， 不能登录ssh的基本配置。
+linux-d4xo-2:/etc/ssh # cat /etc/ssh/sshd_config | grep -v "^#" | grep -v "^$"
+AuthorizedKeysFile      .ssh/authorized_keys
+PasswordAuthentication no
+UsePAM yes
+X11Forwarding yes
+Subsystem       sftp    internal-sftp -m 664
+AcceptEnv LANG LC_CTYPE LC_NUMERIC LC_TIME LC_COLLATE LC_MONETARY LC_MESSAGES
+AcceptEnv LC_PAPER LC_NAME LC_ADDRESS LC_TELEPHONE LC_MEASUREMENT
+AcceptEnv LC_IDENTIFICATION LC_ALL
+Match User testsftponly      # Match指令主要用于条件匹配。这里匹配用户，也可以指定Group
+ChrootDirectory /apppp111222/test_sftp #限制sftp的root目录
+X11Forwarding no        # 禁止X11转发
+AllowTcpForwarding no   # 禁止tcp转发
+ForceCommand internal-sftp -m 664 # 限制用户除了能执行sftp中允许的命令外，其他命令啥也执行不了
+
+
+调试方法(前台运行sshd并打开调试开关)：sshd -D -ddd -e 
+看到error：bad ownership or modes for chroot directory "/apppp111222/test_sftp"
+找到源代码：
+if ((st.st_uid != 0 || (st.st_mode & 022) != 0) && !(last && st.st_uid == uid))
+                        fatal("bad ownership or modes for chroot "
+                            "directory %s\"%s\"",
+                            cp == NULL ? "" : "component ", component);
+
+## ChrootDirectory设置的目录权限及其所有的上级文件夹权限，属主和属组必须是root，权限最大设置只能是755。当不以‘/’结尾时，只有最后一级目录的owner可以是sftp的uid, mode可以是775。 
+
+看到error：chroot into directory without nodev and either noexec or nosuid
+测试函数：Test if filesystem is mounted nosuid and nodev
+
+## ChrootDirectory设置的目录的mount选项必须包含nodev和noexec|nosuid
+
+类似这样(rw,nosuid,nodev,noexec,relatime)
+linux-d4xo-2:~ # mount | grep appp
+/dev/mapper/vg1-lv1 on /apppp111222 type ext3 (rw,nodev,noexec,relatime,stripe=32,data=ordered)
+
+
+
