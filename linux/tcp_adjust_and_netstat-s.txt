@@ -1,0 +1,84 @@
+#查看socket的内部细节
+man ss
+
+ss -temi
+ss -temil
+ss -antp
+
+#网络统计信息
+ss -s
+cat /proc/net/sockstat
+cat /proc/net/sockstat6
+cat /proc/net/dev
+cat /proc/net/snmp
+------------------------------------------------------------------
+
+cat /proc/net/softnet_stat
+网卡收到包后会先将其放置在per cpu变量softnet_data里， 然后触发软中断重softnet_data里取数据包；
+
+softnet_data里有几个status变量，如上图所示，其含义如下：
+
+1、每一行表示每个cpu的softnat_data统计数据；
+
+2、第1列表示该cpu收到的包个数；
+
+3、第2列表示因softnet_data的输入队列满而丢弃的数据包个数（input_pkt_queue，队列长度最大值可通过/proc/sys/net/core/netdev_max_backlog调整）；
+
+4、第3列表示软中断一次取走netdev_budget个数据包，或取数据包时间超过2ms的次数；
+
+5、第4~8列固定为0，没有意义；
+
+6、第9列表示发送数据包时，对应的队列被锁住的次数；
+
+7、表示开启rps时，该cpu向其它cpu发送的ipi中断个数；
+------------------------------------------------------------------
+
+#netstat -s
+#cat /proc/net/netstat |  awk '(f==0) {name=$1; i=2; while ( i<=NF) {n[i] = $i; i++ }; f=1; next} (f==1){ i=2; while ( i<=NF){ printf "%s%s = %d\n", name, n[i], $i; i++}; f=0} ' 
+
+TCP SNMP counters netstat -s 各项参数意义
+https://www.cnblogs.com/lovemyspring/articles/5087895.html
+net/ipv4/proc.c 
+static const struct snmp_mib snmp4_net_list[]
+
+TCP参数调优详解
+https://blog.csdn.net/erlib/article/details/50236919
+man 7 tcp
+
+      tcp_retries1 (integer; default: 3; since Linux 2.2)
+              The  number  of times TCP will attempt to retransmit a packet on an established connection normally, without the extra effort of getting the net-
+              work layers involved.  Once we exceed this number of retransmits, we first have the network layer update the route if possible  before  each  new
+              retransmit.  The default is the RFC specified minimum of 3.
+
+       tcp_retries2 (integer; default: 15; since Linux 2.2)
+              The maximum number of times a TCP packet is retransmitted in established state before giving up.  The default value is 15, which corresponds to a
+              duration of approximately between 13 to 30 minutes, depending on the retransmission timeout.  The RFC 1122 specified minimum limit of 100 seconds
+              is typically deemed too short.
+
+       tcp_max_syn_backlog (integer; default: see below; since Linux 2.2)
+              The maximum number of queued connection requests which have still not received an acknowledgement from the connecting client.  If this number  is
+              exceeded,  the  kernel will begin dropping requests.  The default value of 256 is increased to 1024 when the memory present in the system is ade-
+              quate or greater (>= 128 MB), and reduced to 128 for those systems with very low memory (<= 32 MB).
+
+              Prior to Linux 2.6.20, it was recommended that if this needed to be increased above 1024, the size of the SYNACK hash table  (TCP_SYNQ_HSIZE)  in
+              include/net/tcp.h should be modified to keep
+
+                  TCP_SYNQ_HSIZE * 16 <= tcp_max_syn_backlog
+
+              and the kernel should be recompiled.  In Linux 2.6.20, the fixed sized TCP_SYNQ_HSIZE was removed in favor of dynamic sizing.
+       tcp_syn_retries (integer; default: 5; since Linux 2.2)
+              The maximum number of times initial SYNs for an active TCP connection attempt will be retransmitted.  This value should not be higher  than  255.
+              The default value is 5, which corresponds to approximately 180 seconds.
+
+       tcp_synack_retries (integer; default: 5; since Linux 2.2)
+              The maximum number of times a SYN/ACK segment for a passive TCP connection will be retransmitted.  This number should not be higher than 255.
+
+       tcp_syncookies (Boolean; since Linux 2.2)
+              Enable  TCP  syncookies.   The kernel must be compiled with CONFIG_SYN_COOKIES.  Send out syncookies when the syn backlog queue of a socket over-
+              flows.  The syncookies feature attempts to protect a socket from a SYN flood attack.  This should be used as a last resort, if at all.  This is a
+              violation  of  the TCP protocol, and conflicts with other areas of TCP such as TCP extensions.  It can cause problems for clients and relays.  It
+              is not recommended as a tuning mechanism for heavily loaded servers to help with overloaded or misconfigured conditions.  For recommended  alter-
+              natives see tcp_max_syn_backlog, tcp_synack_retries, and tcp_abort_on_overflow.
+
+
+

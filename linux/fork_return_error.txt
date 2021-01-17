@@ -1,0 +1,170 @@
+跟踪fork: Resource temporarily unavailable的原因
+
+1） 利用systemtap跟踪fork函数的内核执行流：
+
+linux-d4xo-2:~/temp/stap_test # cat fork_monitor.stp
+probe kernel.statement("copy_process@../kernel/fork.c:*")
+{
+    printf("%s\n", pp());
+}
+
+开启此监控程序：
+stap fork_monitor.stp -o fork_monitor.log
+
+2）另开一个shell，创建大量进程
+
+for ((i=1; i<=13000; i++))
+do
+sleep 300 &
+done
+
+当大于12000以后很快就可以看到以下输出。此时强制重启系统。
+
+-bash: fork: retry: Resource temporarily unavailable
+-bash: fork: retry: Resource temporarily unavailable
+-bash: fork: retry: Resource temporarily unavailable
+-bash: fork: retry: Resource temporarily unavailable
+-bash: fork: Resource temporarily unavailable
+-bash: fork: retry: Resource temporarily unavailable
+-bash: fork: retry: Resource temporarily unavailable
+-bash: fork: retry: Resource temporarily unavailable
+-bash: fork: retry: No child processes
+-bash: fork: retry: No child processes
+-bash: fork: retry: No child processes
+-bash: fork: retry: No child processes
+
+
+3） 重启后vim打开fork_monitor.log，可以找到到出错时的执行流程。
+对比源代码，可以看到从1557行跳转到了1662行，然后顺序执行到1701返回error。
+因此是cgroup_can_fork行数返回了非零值。
+
+
+kernel.statement("copy_process@../kernel/fork.c:1547")
+kernel.statement("copy_process@../kernel/fork.c:1556")
+kernel.statement("copy_process@../kernel/fork.c:1557")
+kernel.statement("copy_process@../kernel/fork.c:1662")
+kernel.statement("copy_process@../kernel/fork.c:1663")
+kernel.statement("copy_process@../kernel/fork.c:1665")
+kernel.statement("copy_process@../kernel/fork.c:1667")
+kernel.statement("copy_process@../kernel/fork.c:1670")
+kernel.statement("copy_process@../kernel/fork.c:1672")
+kernel.statement("copy_process@../kernel/fork.c:1673")
+kernel.statement("copy_process@../kernel/fork.c:1675")
+kernel.statement("copy_process@../kernel/fork.c:1676")
+kernel.statement("copy_process@../kernel/fork.c:1678")
+kernel.statement("copy_process@../kernel/fork.c:1680")
+kernel.statement("copy_process@../kernel/fork.c:1682")
+kernel.statement("copy_process@../kernel/fork.c:1684")
+kernel.statement("copy_process@../kernel/fork.c:1688")
+kernel.statement("copy_process@../kernel/fork.c:1691")
+kernel.statement("copy_process@../kernel/fork.c:1696")
+kernel.statement("copy_process@../kernel/fork.c:1697")
+kernel.statement("copy_process@../kernel/fork.c:1699")
+kernel.statement("copy_process@../kernel/fork.c:1701")
+kernel.statement("copy_process@../kernel/fork.c:1702")
+
+
+1550         /*
+1551          * Ensure that the cgroup subsystem policies allow the new process to be
+1552          * forked. It should be noted the the new process's css_set can be changed
+1553          * between here and cgroup_post_fork() if an organisation operation is in
+1554          * progress.
+1555          */
+1556         retval = cgroup_can_fork(p, cgrp_ss_priv);
+1557         if (retval)
+1558                 goto bad_fork_free_pid;
+1559
+
+
+1660 bad_fork_free_pid:
+1661         threadgroup_change_end(current);
+1662         if (pid != &init_struct_pid)
+1663                 free_pid(pid);
+1664 bad_fork_cleanup_thread:
+1665         exit_thread(p);
+1666 bad_fork_cleanup_io:
+1667         if (p->io_context)
+1668                 exit_io_context(p);
+
+
+1695 bad_fork_cleanup_count:
+1696         atomic_dec(&p->cred->user->processes);
+1697         exit_creds(p);
+1698 bad_fork_free:
+1699         free_task(p);
+1700 fork_out:
+1701         return ERR_PTR(retval);
+1702 }
+
+4)cgroup_can_fork 会调用pids_can_fork， 并从/var/log/messages中找到对应的error messages
+
+02021-01-07T20:02:18.654251+08:00 linux-d4xo-2 kernel: [ 1150.704919] cgroup: fork rejected by pids controller in /user.slice/user-0.slice/session-4.scope
+2021-01-07T20:02:55.145436+08:00 linux-d4xo-2 kernel: [ 1187.198910] cgroup: fork rejected by pids controller in /user.slice/user-0.slice/session-1.scope
+
+219 static int pids_can_fork(struct task_struct *task, void **priv_p)
+220 {
+221         struct cgroup_subsys_state *css;
+222         struct pids_cgroup *pids;
+223         int err;
+224
+225         css = task_css_check(current, pids_cgrp_id, true);
+226         pids = css_pids(css);
+227         err = pids_try_charge(pids, 1);
+228         if (err) {
+229                 /* Only log the first time events_limit is incremented. */
+230                 if (atomic64_inc_return(&pids->events_limit) == 1) {
+231                         pr_info("cgroup: fork rejected by pids controller in ");
+232                         pr_cont_cgroup_path(css->cgroup);
+233                         pr_cont("\n");
+234                 }
+235                 cgroup_file_notify(&pids->events_file);
+236         }
+237         return err;
+238 }
+
+5）找到对应的文件，限制值为12288.
+linux-d4xo-2:/sys/fs/cgroup/pids/user.slice/user-0.slice # cat /sys/fs/cgroup/pids/user.slice/user-0.slice/pids.max
+12288
+搜索网络关于pids.max的信息，在机器上找到如下systemd的默认配置信息， 如果需要调整需要修改这个文件然后重启系统生效。
+/etc/systemd/logind.conf:35:#UserTasksMax=12288
+
+man logind.conf
+UserTasksMax=
+           Sets the maximum number of OS tasks each user may run concurrently. This controls the TasksMax= setting of the per-user slice unit, see
+           systemd.resource-control(5) for details. Defaults to 12288 (12K).
+
+
+这是源代码对pids.max的说明,更多例子参考内核文档Documentation/cgroups/pids.txt
+  1 /*
+  2  * Process number limiting controller for cgroups.
+  3  *
+  4  * Used to allow a cgroup hierarchy to stop any new processes from fork()ing
+  5  * after a certain limit is reached.
+  6  *
+  7  * Since it is trivial to hit the task limit without hitting any kmemcg limits
+  8  * in place, PIDs are a fundamental resource. As such, PID exhaustion must be
+  9  * preventable in the scope of a cgroup hierarchy by allowing resource limiting
+ 10  * of the number of tasks in a cgroup.
+ 11  *
+ 12  * In order to use the `pids` controller, set the maximum number of tasks in
+ 13  * pids.max (this is not available in the root cgroup for obvious reasons). The
+ 14  * number of processes currently in the cgroup is given by pids.current.
+ 15  * Organisational operations are not blocked by cgroup policies, so it is
+ 16  * possible to have pids.current > pids.max. However, it is not possible to
+ 17  * violate a cgroup policy through fork(). fork() will return -EAGAIN if forking
+ 18  * would cause a cgroup policy to be violated.
+ 19  *
+ 20  * To set a cgroup to have no limit, set pids.max to "max". This is the default
+ 21  * for all new cgroups (N.B. that PID limits are hierarchical, so the most
+ 22  * stringent limit in the hierarchy is followed).
+ 23  *
+ 24  * pids.current tracks all child cgroup hierarchies, so parent/pids.current is
+ 25  * a superset of parent/child/pids.current.
+ 26  *
+ 27  * Copyright (C) 2015 Aleksa Sarai <cyphar@cyphar.com>
+ 28  *
+ 29  * This file is subject to the terms and conditions of version 2 of the GNU
+ 30  * General Public License.  See the file COPYING in the main directory of the
+ 31  * Linux distribution for more details.
+ 32  */
+

@@ -1,0 +1,32 @@
+Linux用户可用进程数的限制
+
+1）systemd的系统在cgroup中对用户的进程数有默认限制（以root为例，这个是强制限制）：
+
+cat /sys/fs/cgroup/pids/user.slice/user-0.slice/pids.max
+12288
+搜索网络关于pids.max的信息，在机器上找到如下systemd的默认配置信息， 如果需要调整需要修改这个文件然后重启系统生效。
+/etc/systemd/logind.conf:35:#UserTasksMax=12288
+
+man logind.conf
+UserTasksMax=
+           Sets the maximum number of OS tasks each user may run concurrently. This controls the TasksMax= setting of the per-user slice unit, see
+           systemd.resource-control(5) for details. Defaults to 12288 (12K).
+
+查看当前实际使用的进程数
+cat /sys/fs/cgroup/pids/user.slice/user-0.slice/pids.current
+
+2）另外ulimit -u的限制只针对普通用户， root不受限制
+
+3） 系统全局限制在这两个文件中
+/proc/sys/kernel/threads-max
+/proc/sys/kernel/pid_max
+
+4）统计用户的进程数
+ps -Lf -u root | wc -l
+
+5） 统计系统的进程数
+ps -Lf  | wc -l
+
+6）统计每个命令的线程数
+ps -Led -o comm | sort | uniq -c | sort -n
+
