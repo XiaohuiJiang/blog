@@ -1,0 +1,58 @@
+
+以下采样磁盘IO信息，会在当前目录下生成数据文件， 因此先要切换到一个远程NFS的目录下，或者tmpfs目录下，避免影响被测试的磁盘。
+
+挂载一个20MB大小的tmpfs的例子如下，最多可以保存20M的数据在这个目录下
+mkdir /mnt/tmp;mount -t tmpfs -o size=20m tmpfs /mnt/tmp
+
+
+1) blktrace抓去所有IO请求信息数据， 参数为磁盘列表， -w 参数为总的执行秒数。 
+ blktrace会记录每一个磁盘IO的信息，写入脚本之前先观察一下blktrace对系统业务性能是否有影响，预估需要多大存储空间。
+
+linux-l6o4:~/test/blktrace # blktrace /dev/sda /dev/sdb -w 7200
+=== sda ===
+  CPU  0:                    0 events,        0 KiB data
+  CPU  1:                    1 events,        1 KiB data
+  Total:                     1 events (dropped 0),        1 KiB data
+=== sdb ===
+  CPU  0:                    0 events,        0 KiB data
+  CPU  1:                    1 events,        1 KiB data
+  Total:                     1 events (dropped 0),        1 KiB data
+linux-l6o4:~/test/blktrace # ll
+total 8
+-rw-r--r-- 1 root root  0 Feb 23 13:58 sda.blktrace.0
+-rw-r--r-- 1 root root 56 Feb 23 13:58 sda.blktrace.1
+-rw-r--r-- 1 root root  0 Feb 23 13:58 sdb.blktrace.0
+-rw-r--r-- 1 root root 56 Feb 23 13:58 sdb.blktrace.1
+
+后期分析sda的命令举例：
+blkparse -i sda -d sda.parse.bin
+btt -i sda.parse.bin
+
+参考：
+https://blog.csdn.net/ygtlovezf/article/details/80528300
+https://www.sohu.com/a/157462582_314773
+http://linuxperf.com/?p=161
+命令的man手册
+
+2）iostat 命令 每秒采样一次，持续7200秒
+iostat -x 1 7200 >iostat.txt
+
+3） pidstat 间隔1秒，采样7200， 如果采样数据太多，可以去掉-p ALL，只打印有IO流量的进程信息
+pidstat -d -p ALL 1 7200 > pidstat.txt
+
+4） 参考脚本
+执行： nohup ./disk_trace.sh &>/dev/null &
+
+cat disk_trace.sh
+#!/bin/bash
+
+echo "$0"
+
+mkdir /mnt/tmp
+mount -t tmpfs -o size=20m tmpfs /mnt/tmp
+cd /mnt/tmp
+
+blktrace /dev/sda /dev/sdb -w 720 &
+iostat -x 1 720 >iostat.txt &
+pidstat -d -p ALL 1 720 > pidstat.txt &
+

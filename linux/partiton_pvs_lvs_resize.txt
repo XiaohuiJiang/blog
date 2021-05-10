@@ -1,0 +1,722 @@
+## 记录一次磁盘分区及pv缩小和扩大的实验
+
+####  本次实验尝试修改sdc2和/dev/vg1/lv1的大小，先显示当前状态
+linux-suse15sp1-3:~ # lsblk -f
+NAME        FSTYPE      LABEL                            UUID                                   FSAVAIL FSUSE% MOUNTPOINT
+sda
+├─sda1
+├─sda2      btrfs                                        63c51da5-5068-4f49-8854-7afdcea4c83d      5.4G    77% /
+├─sda3      xfs                                          c5d163da-48c6-4784-95b8-8bb5a23f3768       11G    17% /home
+└─sda4      swap                                         4e0bb7af-2855-4342-8982-57abfc041889                  [SWAP]
+sdb         btrfs                                        52409d32-e5b4-438f-86d9-648b7c66809a     96.7G     0% /var/lib/docker
+sdc
+├─sdc1      ext3                                         9a239bb4-e67a-4905-bbce-4dabc3afb046
+└─sdc2      LVM2_member                                  fr3KHu-ngyC-4d0c-pYSZ-Ysrw-0QFz-F13hJT
+  └─vg1-lv1
+sr0         iso9660     SLE-15-SP1-Packages-x86_64-Build 2019-05-25-20-08-23-64
+linux-suse15sp1-3:~ # lsblk
+NAME        MAJ:MIN RM  SIZE RO TYPE MOUNTPOINT
+sda           8:0    0   40G  0 disk
+├─sda1        8:1    0    8M  0 part
+├─sda2        8:2    0 24.8G  0 part /
+├─sda3        8:3    0 13.2G  0 part /home
+└─sda4        8:4    0    2G  0 part [SWAP]
+sdb           8:16   0  100G  0 disk /var/lib/docker
+sdc           8:32   0    1G  0 disk
+├─sdc1        8:33   0  102M  0 part
+└─sdc2        8:34   0  920M  0 part
+  └─vg1-lv1 254:0    0   96M  0 lvm
+sr0          11:0    1  7.8G  0 rom
+linux-suse15sp1-3:~ # vgs
+  VG  #PV #LV #SN Attr   VSize   VFree
+  vg1   1   1   0 wz--n- 916.00m 820.00m
+linux-suse15sp1-3:~ # lvs
+  LV   VG  Attr       LSize  Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+  lv1  vg1 -wi-a----- 96.00m
+linux-suse15sp1-3:~ # pvs
+  PV         VG  Fmt  Attr PSize   PFree
+  /dev/sdc2  vg1 lvm2 a--  916.00m 820.00m
+
+#### 查询目前LV的大小和位置位于sdc2的开始位置的24个extend
+linux-suse15sp1-3:~ # lvs -o +devices
+  LV   VG  Attr       LSize  Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert Devices
+  lv1  vg1 -wi-a----- 96.00m                                                     /dev/sdc2(0)
+linux-suse15sp1-3:~ # lvdisplay /dev/vg1/lv1
+  --- Logical volume ---
+  LV Path                /dev/vg1/lv1
+  LV Name                lv1
+  VG Name                vg1
+  LV UUID                LFWy4o-k60g-bIhk-3tTf-8lfr-I7iZ-JSXiuJ
+  LV Write Access        read/write
+  LV Creation host, time linux-suse15sp1-3, 2021-02-07 16:04:11 +0800
+  LV Status              available
+  # open                 0
+  LV Size                96.00 MiB
+  Current LE             24
+  Segments               1
+  Allocation             inherit
+  Read ahead sectors     auto
+  - currently set to     1024
+  Block device           254:0
+linux-suse15sp1-3:~ # pvdisplay /dev/sdc2
+  --- Physical volume ---
+  PV Name               /dev/sdc2
+  VG Name               vg1
+  PV Size               920.00 MiB / not usable 4.00 MiB
+  Allocatable           yes
+  PE Size               4.00 MiB
+  Total PE              229
+  Free PE               205
+  Allocated PE          24
+  PV UUID               fr3KHu-ngyC-4d0c-pYSZ-Ysrw-0QFz-F13hJT
+
+#### 首先减少文件系统的大小到64M，然后减小lv的大小， 如果lv小于文件系统的大小会破坏文件系统的数据
+linux-suse15sp1-3:~ # mkfs.ext4 /dev/vg1/lv1
+mke2fs 1.43.8 (1-Jan-2018)
+Creating filesystem with 98304 1k blocks and 24576 inodes
+Filesystem UUID: ce4a2d04-b5ca-489a-a95d-9b6fcd44314f
+Superblock backups stored on blocks:
+        8193, 24577, 40961, 57345, 73729
+
+Allocating group tables: done
+Writing inode tables: done
+Creating journal (4096 blocks): done
+Writing superblocks and filesystem accounting information: done
+
+linux-suse15sp1-3:~ # lsblk -f
+NAME        FSTYPE      LABEL                            UUID                                   FSAVAIL FSUSE% MOUNTPOINT
+sda
+├─sda1
+├─sda2      btrfs                                        63c51da5-5068-4f49-8854-7afdcea4c83d      5.4G    77% /
+├─sda3      xfs                                          c5d163da-48c6-4784-95b8-8bb5a23f3768       11G    17% /home
+└─sda4      swap                                         4e0bb7af-2855-4342-8982-57abfc041889                  [SWAP]
+sdb         btrfs                                        52409d32-e5b4-438f-86d9-648b7c66809a     96.7G     0% /var/lib/docker
+sdc
+├─sdc1      ext3                                         9a239bb4-e67a-4905-bbce-4dabc3afb046
+└─sdc2      LVM2_member                                  fr3KHu-ngyC-4d0c-pYSZ-Ysrw-0QFz-F13hJT
+  └─vg1-lv1 ext4                                         ce4a2d04-b5ca-489a-a95d-9b6fcd44314f
+sr0         iso9660     SLE-15-SP1-Packages-x86_64-Build 2019-05-25-20-08-23-64
+linux-suse15sp1-3:~ # lsblk
+NAME        MAJ:MIN RM  SIZE RO TYPE MOUNTPOINT
+sda           8:0    0   40G  0 disk
+├─sda1        8:1    0    8M  0 part
+├─sda2        8:2    0 24.8G  0 part /
+├─sda3        8:3    0 13.2G  0 part /home
+└─sda4        8:4    0    2G  0 part [SWAP]
+sdb           8:16   0  100G  0 disk /var/lib/docker
+sdc           8:32   0    1G  0 disk
+├─sdc1        8:33   0  102M  0 part
+└─sdc2        8:34   0  920M  0 part
+  └─vg1-lv1 254:0    0   96M  0 lvm
+sr0          11:0    1  7.8G  0 rom
+
+linux-suse15sp1-3:~ # resize2fs /dev/vg1/lv1 64M
+resize2fs 1.43.8 (1-Jan-2018)
+Resizing the filesystem on /dev/vg1/lv1 to 65536 (1k) blocks.
+The filesystem on /dev/vg1/lv1 is now 65536 (1k) blocks long.
+linux-suse15sp1-3:~ # mount /dev/vg1/lv1 /mnt
+linux-suse15sp1-3:~ # df -h
+Filesystem           Size  Used Avail Use% Mounted on
+devtmpfs             1.7G     0  1.7G   0% /dev
+tmpfs                1.8G     0  1.8G   0% /dev/shm
+tmpfs                1.8G   18M  1.7G   2% /run
+tmpfs                1.8G     0  1.8G   0% /sys/fs/cgroup
+/dev/sda2             25G   20G  5.4G  79% /
+/dev/sda2             25G   20G  5.4G  79% /.snapshots
+/dev/sda2             25G   20G  5.4G  79% /srv
+/dev/sda2             25G   20G  5.4G  79% /tmp
+/dev/sda2             25G   20G  5.4G  79% /root
+/dev/sda2             25G   20G  5.4G  79% /boot/grub2/x86_64-efi
+/dev/sda2             25G   20G  5.4G  79% /usr/local
+/dev/sda2             25G   20G  5.4G  79% /boot/grub2/i386-pc
+/dev/sda2             25G   20G  5.4G  79% /var
+/dev/sda2             25G   20G  5.4G  79% /opt
+/dev/sdb             100G  398M   97G   1% /var/lib/docker
+/dev/sda3             14G  2.3G   11G  18% /home
+tmpfs                349M   24K  349M   1% /run/user/471
+tmpfs                349M     0  349M   0% /run/user/0
+/dev/mapper/vg1-lv1   58M  1.3M   53M   3% /mnt
+linux-suse15sp1-3:~ # umount /mnt
+linux-suse15sp1-3:~ # lvresize -L 32M /dev/vg1/lv1
+  WARNING: Reducing active logical volume to 32.00 MiB.
+  THIS MAY DESTROY YOUR DATA (filesystem etc.)
+Do you really want to reduce vg1/lv1? [y/n]: y
+  Size of logical volume vg1/lv1 changed from 96.00 MiB (24 extents) to 32.00 MiB (8 extents).
+  Logical volume vg1/lv1 successfully resized.
+linux-suse15sp1-3:~ # lvs
+  LV   VG  Attr       LSize  Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+  lv1  vg1 -wi-a----- 32.00m
+linux-suse15sp1-3:~ # mount /dev/vg1/lv1 /mnt
+mount: /mnt: wrong fs type, bad option, bad superblock on /dev/mapper/vg1-lv1, missing codepage or helper program, or other error.
+linux-suse15sp1-3:~ # e2fsck /dev/vg1/lv1
+e2fsck 1.43.8 (1-Jan-2018)
+Error reading block 32769 (Invalid argument).  Ignore error<y>? yes
+Force rewrite<y>? no
+Superblock has an invalid journal (inode 8).
+Clear<y>? no
+Journal superblock is corrupt.
+Fix<y>? no
+e2fsck: The journal superblock is corrupt while checking journal for /dev/vg1/lv1
+e2fsck: Cannot proceed with file system check
+
+/dev/vg1/lv1: ********** WARNING: Filesystem still has errors **********
+
+linux-suse15sp1-3:~ # lvresize -L 64M /dev/vg1/lv1
+  Size of logical volume vg1/lv1 changed from 32.00 MiB (8 extents) to 64.00 MiB (16 extents).
+  Logical volume vg1/lv1 successfully resized.
+linux-suse15sp1-3:~ # e2fsck /dev/vg1/lv1
+e2fsck 1.43.8 (1-Jan-2018)
+/dev/vg1/lv1: clean, 11/16384 files, 7465/65536 blocks
+linux-suse15sp1-3:~ #
+
+#### 减小pv的大小， pvresize给出的参数最小要比lv多出一个PE的大小（4M）， 否则会报错， 不执行pv缩小操作。
+linux-suse15sp1-3:~ # pvs
+  PV         VG  Fmt  Attr PSize   PFree
+  /dev/sdc2  vg1 lvm2 a--  916.00m 852.00m
+linux-suse15sp1-3:~ # pvresize /dev/sdc2 100M
+  Failed to find device for physical volume "100M".
+  Physical volume "/dev/sdc2" changed
+  1 physical volume(s) resized or updated / 0 physical volume(s) not resized
+linux-suse15sp1-3:~ # pvs
+  PV         VG  Fmt  Attr PSize   PFree
+  /dev/sdc2  vg1 lvm2 a--  916.00m 852.00m
+linux-suse15sp1-3:~ # pvresize --setphysicalvolumesize 100M /dev/sdc2
+/dev/sdc2: Requested size 100.00 MiB is less than real size 920.00 MiB. Proceed?  [y/n]: y
+  WARNING: /dev/sdc2: Pretending size is 204800 not 1884160 sectors.
+  Physical volume "/dev/sdc2" changed
+  1 physical volume(s) resized or updated / 0 physical volume(s) not resized
+linux-suse15sp1-3:~ # lvs
+  LV   VG  Attr       LSize  Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+  lv1  vg1 -wi-a----- 64.00m
+linux-suse15sp1-3:~ # pvs
+  PV         VG  Fmt  Attr PSize  PFree
+  /dev/sdc2  vg1 lvm2 a--  96.00m 32.00m
+linux-suse15sp1-3:~ # pvresize --setphysicalvolumesize 64M /dev/sdc2
+/dev/sdc2: Requested size 64.00 MiB is less than real size 920.00 MiB. Proceed?  [y/n]: y
+  WARNING: /dev/sdc2: Pretending size is 131072 not 1884160 sectors.
+  /dev/sdc2: cannot resize to 15 extents as 16 are allocated.
+  0 physical volume(s) resized or updated / 1 physical volume(s) not resized
+linux-suse15sp1-3:~ # pvresize --setphysicalvolumesize 68M /dev/sdc2
+/dev/sdc2: Requested size 68.00 MiB is less than real size 920.00 MiB. Proceed?  [y/n]: y
+  WARNING: /dev/sdc2: Pretending size is 139264 not 1884160 sectors.
+  Physical volume "/dev/sdc2" changed
+  1 physical volume(s) resized or updated / 0 physical volume(s) not resized
+linux-suse15sp1-3:~ # pvs
+  PV         VG  Fmt  Attr PSize  PFree
+  /dev/sdc2  vg1 lvm2 a--  64.00m    0
+
+#### 尝试减小sdc2到72M
+linux-suse15sp1-3:~ # fdisk /dev/sdc
+
+Welcome to fdisk (util-linux 2.33.1).
+Changes will remain in memory only, until you decide to write them.
+Be careful before using the write command.
+
+
+Command (m for help): p
+Disk /dev/sdc: 1 GiB, 1073741824 bytes, 2097152 sectors
+Disk model: VMware Virtual S
+Units: sectors of 1 * 512 = 512 bytes
+Sector size (logical/physical): 512 bytes / 512 bytes
+I/O size (minimum/optimal): 512 bytes / 512 bytes
+Disklabel type: gpt
+Disk identifier: 87C84A5E-62C8-451D-9F77-D351C85BADE7
+
+Device      Start     End Sectors  Size Type
+/dev/sdc1    2048  210943  208896  102M Linux filesystem
+/dev/sdc2  210944 2095103 1884160  920M Linux filesystem
+
+Command (m for help): d
+Partition number (1,2, default 2): 2
+
+Partition 2 has been deleted.
+
+Command (m for help): p
+Disk /dev/sdc: 1 GiB, 1073741824 bytes, 2097152 sectors
+Disk model: VMware Virtual S
+Units: sectors of 1 * 512 = 512 bytes
+Sector size (logical/physical): 512 bytes / 512 bytes
+I/O size (minimum/optimal): 512 bytes / 512 bytes
+Disklabel type: gpt
+Disk identifier: 87C84A5E-62C8-451D-9F77-D351C85BADE7
+
+Device     Start    End Sectors  Size Type
+/dev/sdc1   2048 210943  208896  102M Linux filesystem
+
+Command (m for help): n
+Partition number (2-128, default 2):
+First sector (210944-2097118, default 210944):
+Last sector, +/-sectors or +/-size{K,M,G,T,P} (210944-2097118, default 2097118): 72M
+Value out of range.
+Last sector, +/-sectors or +/-size{K,M,G,T,P} (210944-2097118, default 2097118): +72M
+
+Created a new partition 2 of type 'Linux filesystem' and of size 72 MiB.
+Partition #2 contains a LVM2_member signature.
+
+Do you want to remove the signature? [Y]es/[N]o: N
+
+Command (m for help): p
+
+Disk /dev/sdc: 1 GiB, 1073741824 bytes, 2097152 sectors
+Disk model: VMware Virtual S
+Units: sectors of 1 * 512 = 512 bytes
+Sector size (logical/physical): 512 bytes / 512 bytes
+I/O size (minimum/optimal): 512 bytes / 512 bytes
+Disklabel type: gpt
+Disk identifier: 87C84A5E-62C8-451D-9F77-D351C85BADE7
+
+Device      Start    End Sectors  Size Type
+/dev/sdc1    2048 210943  208896  102M Linux filesystem
+/dev/sdc2  210944 358399  147456   72M Linux filesystem
+
+Command (m for help): w
+The partition table has been altered.
+Syncing disks.
+
+linux-suse15sp1-3:~ # pvs
+  PV         VG  Fmt  Attr PSize  PFree
+  /dev/sdc2  vg1 lvm2 a--  64.00m    0
+linux-suse15sp1-3:~ # lvs
+  LV   VG  Attr       LSize  Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+  lv1  vg1 -wi-a----- 64.00m
+linux-suse15sp1-3:~ # lsblk
+NAME        MAJ:MIN RM  SIZE RO TYPE MOUNTPOINT
+sda           8:0    0   40G  0 disk
+├─sda1        8:1    0    8M  0 part
+├─sda2        8:2    0 24.8G  0 part /
+├─sda3        8:3    0 13.2G  0 part /home
+└─sda4        8:4    0    2G  0 part [SWAP]
+sdb           8:16   0  100G  0 disk /var/lib/docker
+sdc           8:32   0    1G  0 disk
+├─sdc1        8:33   0  102M  0 part
+└─sdc2        8:34   0   72M  0 part
+  └─vg1-lv1 254:0    0   64M  0 lvm
+sr0          11:0    1  7.8G  0 rom
+linux-suse15sp1-3:~ # mount /dev/vg1/lv1 /mnt
+linux-suse15sp1-3:~ # df -h
+Filesystem           Size  Used Avail Use% Mounted on
+devtmpfs             1.7G     0  1.7G   0% /dev
+tmpfs                1.8G     0  1.8G   0% /dev/shm
+tmpfs                1.8G   18M  1.7G   2% /run
+tmpfs                1.8G     0  1.8G   0% /sys/fs/cgroup
+/dev/sda2             25G   20G  5.4G  79% /
+/dev/sda2             25G   20G  5.4G  79% /.snapshots
+/dev/sda2             25G   20G  5.4G  79% /srv
+/dev/sda2             25G   20G  5.4G  79% /tmp
+/dev/sda2             25G   20G  5.4G  79% /root
+/dev/sda2             25G   20G  5.4G  79% /boot/grub2/x86_64-efi
+/dev/sda2             25G   20G  5.4G  79% /usr/local
+/dev/sda2             25G   20G  5.4G  79% /boot/grub2/i386-pc
+/dev/sda2             25G   20G  5.4G  79% /var
+/dev/sda2             25G   20G  5.4G  79% /opt
+/dev/sdb             100G  398M   97G   1% /var/lib/docker
+/dev/sda3             14G  2.3G   11G  18% /home
+tmpfs                349M   24K  349M   1% /run/user/471
+tmpfs                349M     0  349M   0% /run/user/0
+/dev/mapper/vg1-lv1   58M  1.3M   53M   3% /mnt
+linux-suse15sp1-3:~ # umount /mnt
+
+#### 再次减小分区到68M也可以， 注意一直保持sdc2的起始位置不变
+linux-suse15sp1-3:~ # fdisk /dev/sdc
+
+Welcome to fdisk (util-linux 2.33.1).
+Changes will remain in memory only, until you decide to write them.
+Be careful before using the write command.
+
+
+Command (m for help): p
+Disk /dev/sdc: 1 GiB, 1073741824 bytes, 2097152 sectors
+Disk model: VMware Virtual S
+Units: sectors of 1 * 512 = 512 bytes
+Sector size (logical/physical): 512 bytes / 512 bytes
+I/O size (minimum/optimal): 512 bytes / 512 bytes
+Disklabel type: gpt
+Disk identifier: 87C84A5E-62C8-451D-9F77-D351C85BADE7
+
+Device      Start    End Sectors  Size Type
+/dev/sdc1    2048 210943  208896  102M Linux filesystem
+/dev/sdc2  210944 358399  147456   72M Linux filesystem
+
+Command (m for help): d
+Partition number (1,2, default 2): 2
+
+Partition 2 has been deleted.
+
+Command (m for help): p
+Disk /dev/sdc: 1 GiB, 1073741824 bytes, 2097152 sectors
+Disk model: VMware Virtual S
+Units: sectors of 1 * 512 = 512 bytes
+Sector size (logical/physical): 512 bytes / 512 bytes
+I/O size (minimum/optimal): 512 bytes / 512 bytes
+Disklabel type: gpt
+Disk identifier: 87C84A5E-62C8-451D-9F77-D351C85BADE7
+
+Device     Start    End Sectors  Size Type
+/dev/sdc1   2048 210943  208896  102M Linux filesystem
+
+Command (m for help): n
+Partition number (2-128, default 2):
+First sector (210944-2097118, default 210944):
+Last sector, +/-sectors or +/-size{K,M,G,T,P} (210944-2097118, default 2097118): +68M
+
+Created a new partition 2 of type 'Linux filesystem' and of size 68 MiB.
+Partition #2 contains a LVM2_member signature.
+
+Do you want to remove the signature? [Y]es/[N]o: N
+
+Command (m for help): p
+
+Disk /dev/sdc: 1 GiB, 1073741824 bytes, 2097152 sectors
+Disk model: VMware Virtual S
+Units: sectors of 1 * 512 = 512 bytes
+Sector size (logical/physical): 512 bytes / 512 bytes
+I/O size (minimum/optimal): 512 bytes / 512 bytes
+Disklabel type: gpt
+Disk identifier: 87C84A5E-62C8-451D-9F77-D351C85BADE7
+
+Device      Start    End Sectors  Size Type
+/dev/sdc1    2048 210943  208896  102M Linux filesystem
+/dev/sdc2  210944 350207  139264   68M Linux filesystem
+
+Command (m for help): w
+The partition table has been altered.
+Syncing disks.
+
+linux-suse15sp1-3:~ # lvs
+  LV   VG  Attr       LSize  Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+  lv1  vg1 -wi-a----- 64.00m
+linux-suse15sp1-3:~ # pvs
+  PV         VG  Fmt  Attr PSize  PFree
+  /dev/sdc2  vg1 lvm2 a--  64.00m    0
+linux-suse15sp1-3:~ # mount /dev/vg1/lv1 /mnt
+linux-suse15sp1-3:~ # df -h
+Filesystem           Size  Used Avail Use% Mounted on
+devtmpfs             1.7G     0  1.7G   0% /dev
+tmpfs                1.8G     0  1.8G   0% /dev/shm
+tmpfs                1.8G   18M  1.7G   2% /run
+tmpfs                1.8G     0  1.8G   0% /sys/fs/cgroup
+/dev/sda2             25G   20G  5.4G  79% /
+/dev/sda2             25G   20G  5.4G  79% /.snapshots
+/dev/sda2             25G   20G  5.4G  79% /srv
+/dev/sda2             25G   20G  5.4G  79% /tmp
+/dev/sda2             25G   20G  5.4G  79% /root
+/dev/sda2             25G   20G  5.4G  79% /boot/grub2/x86_64-efi
+/dev/sda2             25G   20G  5.4G  79% /usr/local
+/dev/sda2             25G   20G  5.4G  79% /boot/grub2/i386-pc
+/dev/sda2             25G   20G  5.4G  79% /var
+/dev/sda2             25G   20G  5.4G  79% /opt
+/dev/sdb             100G  398M   97G   1% /var/lib/docker
+/dev/sda3             14G  2.3G   11G  18% /home
+tmpfs                349M   24K  349M   1% /run/user/471
+tmpfs                349M     0  349M   0% /run/user/0
+/dev/mapper/vg1-lv1   58M  1.3M   53M   3% /mnt
+
+#### 减小分区到56M，lvs pvs会报错。
+linux-suse15sp1-3:~ # fdisk /dev/sdc
+
+Welcome to fdisk (util-linux 2.33.1).
+Changes will remain in memory only, until you decide to write them.
+Be careful before using the write command.
+
+
+Command (m for help): p
+Disk /dev/sdc: 1 GiB, 1073741824 bytes, 2097152 sectors
+Disk model: VMware Virtual S
+Units: sectors of 1 * 512 = 512 bytes
+Sector size (logical/physical): 512 bytes / 512 bytes
+I/O size (minimum/optimal): 512 bytes / 512 bytes
+Disklabel type: gpt
+Disk identifier: 87C84A5E-62C8-451D-9F77-D351C85BADE7
+
+Device      Start    End Sectors  Size Type
+/dev/sdc1    2048 210943  208896  102M Linux filesystem
+/dev/sdc2  210944 350207  139264   68M Linux filesystem
+
+Command (m for help): d
+Partition number (1,2, default 2):
+
+Partition 2 has been deleted.
+
+Command (m for help): p
+Disk /dev/sdc: 1 GiB, 1073741824 bytes, 2097152 sectors
+Disk model: VMware Virtual S
+Units: sectors of 1 * 512 = 512 bytes
+Sector size (logical/physical): 512 bytes / 512 bytes
+I/O size (minimum/optimal): 512 bytes / 512 bytes
+Disklabel type: gpt
+Disk identifier: 87C84A5E-62C8-451D-9F77-D351C85BADE7
+
+Device     Start    End Sectors  Size Type
+/dev/sdc1   2048 210943  208896  102M Linux filesystem
+
+Command (m for help): n
+Partition number (2-128, default 2):
+First sector (210944-2097118, default 210944):
+Last sector, +/-sectors or +/-size{K,M,G,T,P} (210944-2097118, default 2097118): +56M
+
+Created a new partition 2 of type 'Linux filesystem' and of size 56 MiB.
+Partition #2 contains a LVM2_member signature.
+
+Do you want to remove the signature? [Y]es/[N]o: n
+
+Command (m for help): p
+
+Disk /dev/sdc: 1 GiB, 1073741824 bytes, 2097152 sectors
+Disk model: VMware Virtual S
+Units: sectors of 1 * 512 = 512 bytes
+Sector size (logical/physical): 512 bytes / 512 bytes
+I/O size (minimum/optimal): 512 bytes / 512 bytes
+Disklabel type: gpt
+Disk identifier: 87C84A5E-62C8-451D-9F77-D351C85BADE7
+
+Device      Start    End Sectors  Size Type
+/dev/sdc1    2048 210943  208896  102M Linux filesystem
+/dev/sdc2  210944 325631  114688   56M Linux filesystem
+
+Command (m for help): w
+The partition table has been altered.
+Syncing disks.
+
+linux-suse15sp1-3:~ # lvs
+  WARNING: Device /dev/sdc2 has size of 114688 sectors which is smaller than corresponding PV size of 137216 sectors. Was device resized?
+  One or more devices used as PVs in VG vg1 have changed sizes.
+  LV   VG  Attr       LSize  Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+  lv1  vg1 -wi-ao---- 64.00m
+linux-suse15sp1-3:~ # pvs
+  WARNING: Device /dev/sdc2 has size of 114688 sectors which is smaller than corresponding PV size of 137216 sectors. Was device resized?
+  One or more devices used as PVs in VG vg1 have changed sizes.
+  PV         VG  Fmt  Attr PSize  PFree
+  /dev/sdc2  vg1 lvm2 a--  64.00m    0
+
+#### 分区调整到64M，继续报错， 必须大于68M（lvs大小+4M）
+linux-suse15sp1-3:~ # fdisk /dev/sdc
+
+Welcome to fdisk (util-linux 2.33.1).
+Changes will remain in memory only, until you decide to write them.
+Be careful before using the write command.
+
+
+Command (m for help): p
+Disk /dev/sdc: 1 GiB, 1073741824 bytes, 2097152 sectors
+Disk model: VMware Virtual S
+Units: sectors of 1 * 512 = 512 bytes
+Sector size (logical/physical): 512 bytes / 512 bytes
+I/O size (minimum/optimal): 512 bytes / 512 bytes
+Disklabel type: gpt
+Disk identifier: 87C84A5E-62C8-451D-9F77-D351C85BADE7
+
+Device      Start    End Sectors  Size Type
+/dev/sdc1    2048 210943  208896  102M Linux filesystem
+/dev/sdc2  210944 325631  114688   56M Linux filesystem
+
+Command (m for help): d
+Partition number (1,2, default 2):
+
+Partition 2 has been deleted.
+
+Command (m for help): n
+Partition number (2-128, default 2):
+First sector (210944-2097118, default 210944):
+Last sector, +/-sectors or +/-size{K,M,G,T,P} (210944-2097118, default 2097118): +64M
+
+Created a new partition 2 of type 'Linux filesystem' and of size 64 MiB.
+Partition #2 contains a LVM2_member signature.
+
+Do you want to remove the signature? [Y]es/[N]o: n
+
+Command (m for help): p
+
+Disk /dev/sdc: 1 GiB, 1073741824 bytes, 2097152 sectors
+Disk model: VMware Virtual S
+Units: sectors of 1 * 512 = 512 bytes
+Sector size (logical/physical): 512 bytes / 512 bytes
+I/O size (minimum/optimal): 512 bytes / 512 bytes
+Disklabel type: gpt
+Disk identifier: 87C84A5E-62C8-451D-9F77-D351C85BADE7
+
+Device      Start    End Sectors  Size Type
+/dev/sdc1    2048 210943  208896  102M Linux filesystem
+/dev/sdc2  210944 342015  131072   64M Linux filesystem
+
+Command (m for help): w
+The partition table has been altered.
+Syncing disks.
+
+linux-suse15sp1-3:~ # lvs
+  WARNING: Device /dev/sdc2 has size of 131072 sectors which is smaller than corresponding PV size of 137216 sectors. Was device resized?
+  One or more devices used as PVs in VG vg1 have changed sizes.
+  LV   VG  Attr       LSize  Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+  lv1  vg1 -wi-ao---- 64.00m
+linux-suse15sp1-3:~ # pvs
+  WARNING: Device /dev/sdc2 has size of 131072 sectors which is smaller than corresponding PV size of 137216 sectors. Was device resized?
+  One or more devices used as PVs in VG vg1 have changed sizes.
+  PV         VG  Fmt  Attr PSize  PFree
+  /dev/sdc2  vg1 lvm2 a--  64.00m    0
+
+
+#### 扩大分区到100M
+linux-suse15sp1-3:~ # fdisk /dev/sdc
+
+Welcome to fdisk (util-linux 2.33.1).
+Changes will remain in memory only, until you decide to write them.
+Be careful before using the write command.
+
+
+Command (m for help): p
+Disk /dev/sdc: 1 GiB, 1073741824 bytes, 2097152 sectors
+Disk model: VMware Virtual S
+Units: sectors of 1 * 512 = 512 bytes
+Sector size (logical/physical): 512 bytes / 512 bytes
+I/O size (minimum/optimal): 512 bytes / 512 bytes
+Disklabel type: gpt
+Disk identifier: 87C84A5E-62C8-451D-9F77-D351C85BADE7
+
+Device      Start    End Sectors  Size Type
+/dev/sdc1    2048 210943  208896  102M Linux filesystem
+/dev/sdc2  210944 342015  131072   64M Linux filesystem
+
+Command (m for help): d
+Partition number (1,2, default 2):
+
+Partition 2 has been deleted.
+
+Command (m for help): n
+Partition number (2-128, default 2):
+First sector (210944-2097118, default 210944):
+Last sector, +/-sectors or +/-size{K,M,G,T,P} (210944-2097118, default 2097118): +100M
+
+Created a new partition 2 of type 'Linux filesystem' and of size 100 MiB.
+Partition #2 contains a LVM2_member signature.
+
+Do you want to remove the signature? [Y]es/[N]o: n
+
+Command (m for help): p
+
+Disk /dev/sdc: 1 GiB, 1073741824 bytes, 2097152 sectors
+Disk model: VMware Virtual S
+Units: sectors of 1 * 512 = 512 bytes
+Sector size (logical/physical): 512 bytes / 512 bytes
+I/O size (minimum/optimal): 512 bytes / 512 bytes
+Disklabel type: gpt
+Disk identifier: 87C84A5E-62C8-451D-9F77-D351C85BADE7
+
+Device      Start    End Sectors  Size Type
+/dev/sdc1    2048 210943  208896  102M Linux filesystem
+/dev/sdc2  210944 415743  204800  100M Linux filesystem
+
+Command (m for help): w
+The partition table has been altered.
+Syncing disks.
+
+linux-suse15sp1-3:~ # pvs
+  PV         VG  Fmt  Attr PSize  PFree
+  /dev/sdc2  vg1 lvm2 a--  64.00m    0
+linux-suse15sp1-3:~ # lvs
+  LV   VG  Attr       LSize  Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+  lv1  vg1 -wi-ao---- 64.00m
+linux-suse15sp1-3:~ # lsblk
+NAME        MAJ:MIN RM  SIZE RO TYPE MOUNTPOINT
+sda           8:0    0   40G  0 disk
+├─sda1        8:1    0    8M  0 part
+├─sda2        8:2    0 24.8G  0 part /
+├─sda3        8:3    0 13.2G  0 part /home
+└─sda4        8:4    0    2G  0 part [SWAP]
+sdb           8:16   0  100G  0 disk /var/lib/docker
+sdc           8:32   0    1G  0 disk
+├─sdc1        8:33   0  102M  0 part
+└─sdc2        8:34   0  100M  0 part
+  └─vg1-lv1 254:0    0   64M  0 lvm  /mnt
+sr0          11:0    1  7.8G  0 rom
+
+#### 现在尝试扩大pv和lv，lv最大值小于pv的分区大小4M。
+linux-suse15sp1-3:~ # pvresize /dev/sdc2
+  Physical volume "/dev/sdc2" changed
+  1 physical volume(s) resized or updated / 0 physical volume(s) not resized
+linux-suse15sp1-3:~ # pvs
+  PV         VG  Fmt  Attr PSize  PFree
+  /dev/sdc2  vg1 lvm2 a--  96.00m 32.00m
+linux-suse15sp1-3:~ # lvs
+  LV   VG  Attr       LSize  Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+  lv1  vg1 -wi-ao---- 64.00m
+linux-suse15sp1-3:~ # lvresize -L +32M /dev/vg1/lv1
+  Size of logical volume vg1/lv1 changed from 64.00 MiB (16 extents) to 96.00 MiB (24 extents).
+  Logical volume vg1/lv1 successfully resized.
+linux-suse15sp1-3:~ # lvresize -L +32M /dev/vg1/lv1
+  Insufficient free space: 8 extents needed, but only 0 available
+linux-suse15sp1-3:~ # lvresize -L +4M /dev/vg1/lv1
+  Insufficient free space: 1 extents needed, but only 0 available
+
+linux-suse15sp1-3:~ # lvs
+  LV   VG  Attr       LSize  Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+  lv1  vg1 -wi-ao---- 96.00m
+linux-suse15sp1-3:~ # lsblk
+NAME        MAJ:MIN RM  SIZE RO TYPE MOUNTPOINT
+sda           8:0    0   40G  0 disk
+├─sda1        8:1    0    8M  0 part
+├─sda2        8:2    0 24.8G  0 part /
+├─sda3        8:3    0 13.2G  0 part /home
+└─sda4        8:4    0    2G  0 part [SWAP]
+sdb           8:16   0  100G  0 disk /var/lib/docker
+sdc           8:32   0    1G  0 disk
+├─sdc1        8:33   0  102M  0 part
+└─sdc2        8:34   0  100M  0 part
+  └─vg1-lv1 254:0    0   96M  0 lvm  /mnt
+sr0          11:0    1  7.8G  0 rom
+
+#### 在线扩容ext4文件系统， 关注/dev/mapper/vg1-lv1的Avail变化
+linux-suse15sp1-3:~ # mount /dev/vg1/lv1 /mnt
+mount: /mnt: /dev/mapper/vg1-lv1 already mounted on /mnt.
+linux-suse15sp1-3:~ # df -h
+Filesystem           Size  Used Avail Use% Mounted on
+devtmpfs             1.7G     0  1.7G   0% /dev
+tmpfs                1.8G     0  1.8G   0% /dev/shm
+tmpfs                1.8G   18M  1.7G   2% /run
+tmpfs                1.8G     0  1.8G   0% /sys/fs/cgroup
+/dev/sda2             25G   20G  5.4G  79% /
+/dev/sda2             25G   20G  5.4G  79% /.snapshots
+/dev/sda2             25G   20G  5.4G  79% /srv
+/dev/sda2             25G   20G  5.4G  79% /tmp
+/dev/sda2             25G   20G  5.4G  79% /root
+/dev/sda2             25G   20G  5.4G  79% /boot/grub2/x86_64-efi
+/dev/sda2             25G   20G  5.4G  79% /usr/local
+/dev/sda2             25G   20G  5.4G  79% /boot/grub2/i386-pc
+/dev/sda2             25G   20G  5.4G  79% /var
+/dev/sda2             25G   20G  5.4G  79% /opt
+/dev/sdb             100G  398M   97G   1% /var/lib/docker
+/dev/sda3             14G  2.3G   11G  18% /home
+tmpfs                349M   24K  349M   1% /run/user/471
+tmpfs                349M     0  349M   0% /run/user/0
+/dev/mapper/vg1-lv1   58M  1.3M   53M   3% /mnt
+linux-suse15sp1-3:~ # resize2fs /dev/vg1/lv1
+resize2fs 1.43.8 (1-Jan-2018)
+Filesystem at /dev/vg1/lv1 is mounted on /mnt; on-line resizing required
+old_desc_blocks = 1, new_desc_blocks = 1
+The filesystem on /dev/vg1/lv1 is now 98304 (1k) blocks long.
+
+linux-suse15sp1-3:~ # e2fsck /dev/vg1/lv1
+e2fsck 1.43.8 (1-Jan-2018)
+/dev/vg1/lv1 is mounted.
+e2fsck: Cannot continue, aborting.
+
+
+linux-suse15sp1-3:~ # df -h
+Filesystem           Size  Used Avail Use% Mounted on
+devtmpfs             1.7G     0  1.7G   0% /dev
+tmpfs                1.8G     0  1.8G   0% /dev/shm
+tmpfs                1.8G   18M  1.7G   2% /run
+tmpfs                1.8G     0  1.8G   0% /sys/fs/cgroup
+/dev/sda2             25G   20G  5.4G  79% /
+/dev/sda2             25G   20G  5.4G  79% /.snapshots
+/dev/sda2             25G   20G  5.4G  79% /srv
+/dev/sda2             25G   20G  5.4G  79% /tmp
+/dev/sda2             25G   20G  5.4G  79% /root
+/dev/sda2             25G   20G  5.4G  79% /boot/grub2/x86_64-efi
+/dev/sda2             25G   20G  5.4G  79% /usr/local
+/dev/sda2             25G   20G  5.4G  79% /boot/grub2/i386-pc
+/dev/sda2             25G   20G  5.4G  79% /var
+/dev/sda2             25G   20G  5.4G  79% /opt
+/dev/sdb             100G  398M   97G   1% /var/lib/docker
+/dev/sda3             14G  2.3G   11G  18% /home
+tmpfs                349M   24K  349M   1% /run/user/471
+tmpfs                349M     0  349M   0% /run/user/0
+/dev/mapper/vg1-lv1   89M  1.6M   82M   2% /mnt
